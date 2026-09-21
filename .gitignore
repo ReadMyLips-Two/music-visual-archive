@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.local
+.env.local
+.env.*.local
+*.log
+*credentials*.json
+*secrets*.json
+*tokens*.json
+*.pem
+*.key
+*.p12
+*.pfx
