@@ -31,6 +31,44 @@ function LibraryFeedback() {
   </div>
 }
 
+/* A fixed editorial score: data supplies covers, not random placement. */
+const motionPositions = [
+  [3, -10, 128], [21, 8, 174], [39, -7, 119], [56, 11, 162], [73, -8, 142], [88, 13, 163],
+  [9, 26, 181], [30, 18, 121], [46, 31, 156], [66, 23, 185], [82, 35, 127], [1, 47, 115],
+  [18, 53, 151], [35, 44, 190], [54, 55, 122], [73, 48, 166], [91, 58, 144], [7, 72, 174],
+  [25, 66, 130], [42, 79, 163], [61, 69, 184], [79, 83, 120], [95, 76, 146], [0, 93, 135],
+  [17, 87, 179], [37, 101, 118], [55, 92, 158], [70, 105, 133], [86, 97, 181], [32, -18, 143],
+] as const
+
+const mobileMotionPositions = [
+  [10, 8, 116], [48, 20, 125], [13, 45, 111], [54, 59, 133],
+  [8, 78, 108], [57, 5, 105], [31, 35, 118], [63, 83, 104],
+] as const
+
+const sparseDesktopPositions = [
+  [12, 19, 145], [74, 3, 175], [83, 53, 145], [32, 65, 158],
+  [70, 12, 136], [4, 76, 122], [60, 70, 160],
+] as const
+
+const sparseMobilePositions = [
+  [11, 3, 120], [53, 0, 120], [30, 70, 110], [58, 74, 105],
+  [9, 48, 109], [56, 7, 111], [30, 82, 96],
+] as const
+
+function selectMotionAlbums(albums: LibraryAlbum[]) {
+  const seen = new Set<string>()
+  const distinct = albums.filter(album => {
+    const key = album.artwork ?? album.id
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  const count = Math.min(distinct.length, motionPositions.length)
+  return count === distinct.length
+    ? distinct
+    : Array.from({ length: count }, (_, index) => distinct[Math.floor((index + 0.5) * distinct.length / count)])
+}
+
 export function MotionPage() {
   const { library, mode, status } = useLibrary()
   const [showInvitation, setShowInvitation] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
@@ -38,29 +76,27 @@ export function MotionPage() {
     const timer = window.setTimeout(() => setShowInvitation(true), 5000)
     return () => window.clearTimeout(timer)
   }, [])
-  const selection = useMemo(() => library.albums.slice(0, 35), [library.albums])
-  return <div className="archive-page motion-page">
-    <div className="motion-topline"><span>03 / THE ARCHIVE IN MOTION</span><span>{library.albums.length} SAVED ALBUMS · {mode === 'demo' ? 'DEMO' : 'SPOTIFY'}</span></div>
+  const selection = useMemo(() => selectMotionAlbums(library.albums), [library.albums])
+  const sparse = selection.length < 8
+  return <div className={'archive-page motion-page' + (sparse ? ' motion-page--sparse' : '')}>
+    <div className="motion-topline"><span>03 / THE ARCHIVE IN MOTION</span><span>{library.albums.length} {mode === 'demo' ? 'FICTIONAL DEMO ALBUMS' : 'SAVED SPOTIFY ALBUMS'}</span></div>
     <h1 className="sr-only">The Archive in Motion</h1>
     <div className="motion-scene" aria-label="音乐封面的视觉档案">
       <div className="motion-field" aria-hidden="true" />
       {selection.map((album, index) => {
-        const sparse = selection.length < 8
-        const column = sparse ? index : index % 7
-        const row = sparse ? 0 : Math.floor(index / 7)
+        const [x, y, width] = sparse ? sparseDesktopPositions[index] : motionPositions[index]
+        const [mobileX, mobileY, mobileWidth] = sparse ? sparseMobilePositions[index] : mobileMotionPositions[index % mobileMotionPositions.length]
         const style = {
-          '--motion-x': sparse ? `${12 + (index * 71) / Math.max(1, selection.length - 1)}%` : `${3 + column * 14 + (row % 2) * 5}%`,
-          '--motion-y': sparse ? `${19 + (index % 3) * 17}%` : `${-10 + row * 25 + (column % 3) * 3}%`,
-          '--motion-width': sparse ? `${145 + (index % 2) * 30}px` : `${105 + ((index * 13) % 65)}px`,
-          '--motion-delay': `${(index % 5) * -1.4}s`,
-          '--motion-duration': `${18 + (row % 3) * 4}s`,
+          '--motion-x': String(x) + '%', '--motion-y': String(y) + '%', '--motion-width': String(width) + 'px',
+          '--motion-mobile-x': String(mobileX) + '%', '--motion-mobile-y': String(mobileY) + '%', '--motion-mobile-width': String(mobileWidth) + 'px',
+          '--motion-travel': String(14 + (index % 4) * 4) + 'px',
         } as CSSProperties
-        return <Link key={album.id} className="motion-object" style={style} to={`/albums/${album.id}`} aria-label={`${album.title} — ${album.artist}`}>
+        return <Link key={album.id} className="motion-object" data-mobile-visible={sparse || index < 5} style={style} to={'/albums/' + album.id} aria-label={album.title + ' — ' + album.artist}>
           <ArchiveCover album={album} eager={index < 8} small /><span>{album.title}</span>
         </Link>
       })}
       {selection.length === 0 && status !== 'loading' && <p className="motion-empty">Your archive is waiting for its first saved album.<br /><Link to="/index">Continue to the index ↗</Link></p>}
-      <div className={`motion-invitation${showInvitation ? ' is-visible' : ''}`}>
+      <div className={'motion-invitation' + (showInvitation ? ' is-visible' : '')}>
         <span>YOUR COLLECTION / A VISUAL SPACE</span><p>Choose your<br /><em>visual world.</em></p>
         <Link to="/index">ENTER THE INDEX <span aria-hidden="true">↗</span></Link>
       </div>
@@ -69,7 +105,6 @@ export function MotionPage() {
     <LibraryFeedback />
   </div>
 }
-
 type Folder = GenreDefinition & { route: string; album: LibraryAlbum | null }
 export function IndexPage() {
   const { library, mode } = useLibrary()
