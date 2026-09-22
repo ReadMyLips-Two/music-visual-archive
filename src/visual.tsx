@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type TouchEvent, type WheelEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode, type TouchEvent, type WheelEvent } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useLibrary, type LibraryAlbum, type LibraryTrack } from './library'
 import { albumGenres, albumsForGenre, genres, setAlbumGenres, useGenreAssignments, type GenreDefinition, type GenreId } from './genres'
@@ -6,7 +6,7 @@ import { albumGenres, albumsForGenre, genres, setAlbumGenres, useGenreAssignment
 function ArchiveCover({ album, className = '', eager = false, small = false }: { album: LibraryAlbum; className?: string; eager?: boolean; small?: boolean }) {
   return album.artwork
     ? <img className={`archive-cover ${className}`} src={small ? album.artworkSmall ?? album.artwork : album.artwork} loading={eager ? 'eager' : 'lazy'} alt={`${album.title} — ${album.artist} 专辑封面`} />
-    : <div className={`archive-cover archive-cover--demo ${className}`} style={{ backgroundColor: album.color }} role="img" aria-label={`${album.title} 虚构演示封面`}><span>DEMO ARTWORK</span><strong>{album.title}</strong><small>{album.artist}</small></div>
+    : <div className={`archive-cover archive-cover--demo archive-cover--${album.id} ${className}`} style={{ backgroundColor: album.color }} role="img" aria-label={`${album.title} 虚构演示封面`}><span>DEMO ARTWORK</span><strong>{album.title}</strong><small>{album.artist}</small></div>
 }
 
 function SpotifySource({ url, children = 'OPEN IN SPOTIFY ↗' }: { url: string | null; children?: ReactNode }) {
@@ -31,28 +31,29 @@ function LibraryFeedback() {
   </div>
 }
 
-/* A fixed editorial score: data supplies covers, not random placement. */
+/* An authored perimeter score leaves an open reading area in the middle. */
 const motionPositions = [
-  [3, -10, 128], [21, 8, 174], [39, -7, 119], [56, 11, 162], [73, -8, 142], [88, 13, 163],
-  [9, 26, 181], [30, 18, 121], [46, 31, 156], [66, 23, 185], [82, 35, 127], [1, 47, 115],
-  [18, 53, 151], [35, 44, 190], [54, 55, 122], [73, 48, 166], [91, 58, 144], [7, 72, 174],
-  [25, 66, 130], [42, 79, 163], [61, 69, 184], [79, 83, 120], [95, 76, 146], [0, 93, 135],
-  [17, 87, 179], [37, 101, 118], [55, 92, 158], [70, 105, 133], [86, 97, 181], [32, -18, 143],
+  [2, 2, 112], [16, 8, 153], [31, 1, 104], [44, 9, 131], [58, 0, 158], [73, 7, 117], [86, 1, 145],
+  [1, 27, 141], [17, 35, 109], [29, 26, 93], [70, 27, 177], [84, 34, 128],
+  [4, 53, 117], [16, 58, 149], [75, 55, 134], [89, 58, 104],
+  [1, 76, 151], [17, 73, 105], [27, 74, 132], [69, 71, 160], [84, 76, 111],
+  [6, 92, 92], [23, 91, 142], [40, 93, 102], [56, 92, 134], [73, 92, 151], [89, 89, 104],
+  [0, 43, 88], [91, 18, 98], [95, 79, 92],
 ] as const
 
 const mobileMotionPositions = [
-  [10, 8, 116], [48, 20, 125], [13, 45, 111], [54, 59, 133],
-  [8, 78, 108], [57, 5, 105], [31, 35, 118], [63, 83, 104],
+  [7, 4, 104], [62, 9, 96], [5, 30, 83], [71, 34, 91],
+  [9, 77, 108], [66, 77, 99], [3, 58, 78], [76, 59, 80],
 ] as const
 
 const sparseDesktopPositions = [
-  [12, 19, 145], [74, 3, 175], [83, 53, 145], [32, 65, 158],
-  [70, 12, 136], [4, 76, 122], [60, 70, 160],
+  [12, 19, 220], [74, 9, 205], [72, 55, 198], [11, 69, 188],
+  [80, 40, 158], [24, 4, 162], [47, 78, 168],
 ] as const
 
 const sparseMobilePositions = [
-  [11, 3, 120], [53, 0, 120], [30, 70, 110], [58, 74, 105],
-  [9, 48, 109], [56, 7, 111], [30, 82, 96],
+  [8, 6, 125], [59, 13, 112], [47, 74, 110], [6, 75, 104],
+  [74, 54, 99], [8, 30, 100], [70, 4, 100],
 ] as const
 
 function selectMotionAlbums(albums: LibraryAlbum[]) {
@@ -71,14 +72,23 @@ function selectMotionAlbums(albums: LibraryAlbum[]) {
 
 export function MotionPage() {
   const { library, mode, status } = useLibrary()
+  const navigate = useNavigate()
   const [showInvitation, setShowInvitation] = useState(() => matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const [leaving, setLeaving] = useState(false)
   useEffect(() => {
     const timer = window.setTimeout(() => setShowInvitation(true), 5000)
     return () => window.clearTimeout(timer)
   }, [])
   const selection = useMemo(() => selectMotionAlbums(library.albums), [library.albums])
   const sparse = selection.length < 8
-  return <div className={'archive-page motion-page' + (sparse ? ' motion-page--sparse' : '')}>
+  const enterIndex = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault()
+    if (leaving) return
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) { navigate('/index'); return }
+    setLeaving(true)
+    window.setTimeout(() => navigate('/index'), 420)
+  }
+  return <div className={'archive-page motion-page' + (sparse ? ' motion-page--sparse' : '') + (leaving ? ' motion-page--leaving' : '')}>
     <div className="motion-topline"><span>03 / THE ARCHIVE IN MOTION</span><span>{library.albums.length} {mode === 'demo' ? 'FICTIONAL DEMO ALBUMS' : 'SAVED SPOTIFY ALBUMS'}</span></div>
     <h1 className="sr-only">The Archive in Motion</h1>
     <div className="motion-scene" aria-label="音乐封面的视觉档案">
@@ -90,55 +100,64 @@ export function MotionPage() {
           '--motion-x': String(x) + '%', '--motion-y': String(y) + '%', '--motion-width': String(width) + 'px',
           '--motion-mobile-x': String(mobileX) + '%', '--motion-mobile-y': String(mobileY) + '%', '--motion-mobile-width': String(mobileWidth) + 'px',
           '--motion-travel': String(14 + (index % 4) * 4) + 'px',
+          '--motion-time': String(26 + (index % 5) * 2) + 's',
         } as CSSProperties
-        return <Link key={album.id} className="motion-object" data-mobile-visible={sparse || index < 5} style={style} to={'/albums/' + album.id} aria-label={album.title + ' — ' + album.artist}>
+        return <Link key={album.id} className="motion-object" data-mobile-visible={sparse || index < 8} style={style} to={'/albums/' + album.id} aria-label={album.title + ' — ' + album.artist}>
           <ArchiveCover album={album} eager={index < 8} small /><span>{album.title}</span>
         </Link>
       })}
       {selection.length === 0 && status !== 'loading' && <p className="motion-empty">Your archive is waiting for its first saved album.<br /><Link to="/index">Continue to the index ↗</Link></p>}
       <div className={'motion-invitation' + (showInvitation ? ' is-visible' : '')}>
         <span>YOUR COLLECTION / A VISUAL SPACE</span><p>Choose your<br /><em>visual world.</em></p>
-        <Link to="/index">ENTER THE INDEX <span aria-hidden="true">↗</span></Link>
+        <Link to="/index" onClick={enterIndex}>ENTER THE INDEX <span aria-hidden="true">→</span></Link>
       </div>
     </div>
-    <div className="motion-bottomline"><span>IMAGE / MEMORY / MOTION</span><Link to="/index">SKIP INTRO — THE INDEX ↗</Link></div>
+    <div className="motion-bottomline"><span>IMAGE / MEMORY / MOTION</span><Link to="/index" onClick={enterIndex}>SKIP INTRO — THE INDEX ↗</Link></div>
     <LibraryFeedback />
   </div>
 }
-type Folder = GenreDefinition & { route: string; album: LibraryAlbum | null }
+type Folder = GenreDefinition & { route: string; album: LibraryAlbum | null; count: number }
 export function IndexPage() {
   const { library, mode } = useLibrary()
   const assignments = useGenreAssignments()
+  const navigate = useNavigate()
   const [active, setActive] = useState<string | null>(null)
+  const [entering, setEntering] = useState<string | null>(null)
   const touchRef = useRef(false)
   const touchedOpen = useRef(false)
   const folders: Folder[] = [
-    { id: 'all' as GenreId, number: '00', name: 'ALL ALBUMS', entry: 'Everything you chose to keep.', statement: '', color: '#deddda', ink: '#1e1e1e', route: '/albums', album: library.albums[0] ?? null },
-    ...genres.map(genre => ({ ...genre, route: `/genres/${genre.id}`, album: albumsForGenre(library.albums, genre.id, assignments)[0] ?? null })),
+    { id: 'all' as GenreId, number: '00', name: 'ALL ALBUMS', entry: 'Everything you chose to keep.', statement: '', color: '#deddda', ink: '#1e1e1e', route: '/albums', album: library.albums[0] ?? null, count: library.albums.length },
+    ...genres.map(genre => ({ ...genre, route: `/genres/${genre.id}`, album: albumsForGenre(library.albums, genre.id, assignments)[0] ?? null, count: albumsForGenre(library.albums, genre.id, assignments).length })),
   ]
-  return <div className="archive-page index-page"><div className="index-heading"><PageIntro number="04" title="The Index." aside="TEN FOLDERS / ONE PERSONAL ARCHIVE" />
+  return <div className={`archive-page index-page${entering ? ' is-entering' : ''}`}><div className="index-heading"><PageIntro number="04" title="The Index." aside="TEN FOLDERS / ONE PERSONAL ARCHIVE" />
       <p>Find a way in.<br />One collection, many visual worlds.</p></div>
     <LibraryFeedback /><div className="folder-stack" onMouseLeave={() => setActive(null)}>
-      {folders.map(folder => {
+      {folders.map((folder, folderIndex) => {
         const open = active === folder.id
-        const style = { '--folder-color': folder.color, '--folder-ink': folder.ink } as CSSProperties
-        return <div key={folder.id} className={`archive-folder${open ? ' is-open' : ''}`} style={style} onPointerEnter={event => { if (event.pointerType === 'mouse') setActive(folder.id) }} onFocus={() => { if (!touchRef.current) setActive(folder.id) }}>
+        const style = { '--folder-color': folder.color, '--folder-ink': folder.ink, '--folder-previous': folders[folderIndex - 1]?.color ?? '#efeee8' } as CSSProperties
+        return <div key={folder.id} className={`archive-folder${open ? ' is-open' : ''}${entering === folder.id ? ' is-entering' : ''}`} style={style} onPointerEnter={event => { if (event.pointerType === 'mouse') setActive(folder.id) }} onFocus={() => { if (!touchRef.current) setActive(folder.id) }}>
           <Link to={folder.route} className="archive-folder__link" aria-label={`${folder.number} ${folder.name}，进入空间`}
             onTouchStart={() => { touchedOpen.current = active === folder.id; touchRef.current = true }}
             onClick={event => {
-              if (touchRef.current && !touchedOpen.current) { event.preventDefault(); setActive(folder.id) }
+              if (touchRef.current && !touchedOpen.current) { event.preventDefault(); setActive(folder.id); touchRef.current = false; return }
               touchRef.current = false
+              if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+              event.preventDefault()
+              if (entering) return
+              setActive(folder.id)
+              setEntering(folder.id)
+              window.setTimeout(() => navigate(folder.route), 320)
             }}>
             <span className="archive-folder__tab">{folder.name}</span>
-            <span className="archive-folder__number">{folder.number}</span>
+
             <span className="archive-folder__reveal" aria-hidden={!open}>
               <span className="archive-folder__cover">{folder.album ? <ArchiveCover album={folder.album} eager={open} small /> : <span className="archive-folder__no-cover">NO VERIFIED<br />ALBUM YET</span>}</span>
-              <span className="archive-folder__entry"><small>{folder.number} / {folder.name}</small><strong>{folder.entry}</strong><small>{folder.album ? 'ENTER SPACE ↗' : 'EXPLORE EMPTY SPACE ↗'}</small></span>
+              <span className="archive-folder__entry"><small>{folder.number} / {folder.name} · {folder.count} RECORDS</small><strong>{folder.entry}</strong><small>{folder.album ? 'ENTER SPACE ↗' : 'EXPLORE EMPTY SPACE ↗'}</small></span>
             </span>
           </Link>
         </div>
       })}
-    </div><div className="index-foot"><span>{mode === 'demo' ? 'DEMO CONTENT / FICTIONAL ALBUMS' : 'UNCLASSIFIED ALBUMS REMAIN IN ALL ALBUMS'}</span><Link to="/motion">← BACK TO MOTION</Link></div>
+    </div><div className="index-foot"><span>{mode === 'demo' ? 'DEMO CONTENT / FICTIONAL ALBUMS' : library.classification.status === 'running' ? `CLASSIFYING ${library.classification.completed} / ${library.classification.total}` : `${library.classification.classified} CLASSIFIED · ${library.classification.unclassified} UNCLASSIFIED`}</span><Link to="/motion">← BACK TO MOTION</Link></div>
   </div>
 }
 
@@ -146,11 +165,11 @@ export function AllAlbumsPage() {
   const { library, mode } = useLibrary()
   const navigate = useNavigate()
   const [query, setQuery] = useState('')
-  const [current, setCurrent] = useState(0)
+  const [current, setCurrent] = useState(() => library.albums.length === 3 ? 1 : 0)
   const touchStart = useRef(0)
   const wheelAt = useRef(0)
   const filtered = useMemo(() => library.albums.filter(album => `${album.title} ${album.artist}`.toLowerCase().includes(query.trim().toLowerCase())), [library.albums, query])
-  useEffect(() => setCurrent(0), [query, library.albums])
+  useEffect(() => setCurrent(filtered.length === 3 ? 1 : 0), [query, library.albums])
   const move = (direction: number) => setCurrent(index => Math.max(0, Math.min(filtered.length - 1, index + direction)))
   const onWheel = (event: WheelEvent) => {
     if (Math.abs(event.deltaX) < 8 && Math.abs(event.deltaY) < 8) return
@@ -183,7 +202,7 @@ export function AllAlbumsPage() {
       <div className="album-deck__caption"><span>{String(current + 1).padStart(3, '0')} / {String(filtered.length).padStart(3, '0')}</span>
         <div><h2>{filtered[current]?.title}</h2><p>{filtered[current]?.artist}</p></div><Link to={`/albums/${filtered[current].id}`}>OPEN RECORD ↗</Link></div>
       <div className="album-deck__controls"><button type="button" onClick={() => move(-1)} disabled={current === 0} aria-label="上一张专辑">←</button>
-        <span>DRAG / SCROLL / ARROW KEYS</span><button type="button" onClick={() => move(1)} disabled={current === filtered.length - 1} aria-label="下一张专辑">→</button></div>
+        <span>SCROLL / SWIPE / ARROW KEYS</span><button type="button" onClick={() => move(1)} disabled={current === filtered.length - 1} aria-label="下一张专辑">→</button></div>
     </div> : <div className="archive-empty"><span>NO RECORDS FOUND</span><p>{query ? 'Try another album or artist.' : 'Your saved albums will appear here.'}</p><Link to="/index">RETURN TO THE INDEX ↗</Link></div>}
   </div>
 }
@@ -203,13 +222,32 @@ export function GenreWorldPage() {
   const { genreId } = useParams()
   const { library } = useLibrary()
   const assignments = useGenreAssignments()
+  const [density, setDensity] = useState(2)
+  const [scale, setScale] = useState(1)
+  const [looseness, setLooseness] = useState(2)
+  const [showText, setShowText] = useState(true)
+  const [motion, setMotion] = useState(true)
   const genre = genres.find(item => item.id === genreId)
   if (!genre) return <MissingPage />
   const collection = albumsForGenre(library.albums, genre.id, assignments)
-  return <div className={`archive-page genre-world genre-world--${genre.id}`} style={{ '--genre-accent': genre.color, '--genre-ink': genre.ink } as CSSProperties}>
+  const worldStyle = {
+    '--genre-accent': genre.color, '--genre-ink': genre.ink,
+    '--world-scale': scale, '--world-gap': `${12 + looseness * 12}px`,
+    '--world-columns': density === 1 ? 3 : density === 2 ? 4 : 5,
+  } as CSSProperties
+  return <div className={`archive-page genre-world genre-world--${genre.id}`} data-text={showText} data-motion={motion} data-density={density} style={worldStyle}>
     <div className="genre-world__top"><span>M / V / A — {genre.number}</span><Link to="/index">← THE INDEX</Link></div>
     <div className="genre-world__hero"><span className="genre-world__number">{genre.number} / 09</span><h1>{genre.name}</h1><p>{genre.statement}</p><div className="genre-world__emblem" aria-hidden="true"><span /><span /><span /></div></div>
-    <div className="genre-world__contents"><div className="genre-world__caption"><span>{String(collection.length).padStart(2, '0')} RECORDS IN THIS WORLD</span><strong>{genre.entry}</strong></div>
+    <div className="genre-world__contents"><div className="genre-world__caption"><span>{library.classification.status === 'running' ? `CLASSIFYING ${library.classification.completed} / ${library.classification.total}` : `${String(collection.length).padStart(2, '0')} RECORDS IN THIS WORLD`}</span><strong>{genre.entry}</strong></div>
+      <details className="genre-world__settings"><summary>ADJUST THE VIEW <span aria-hidden="true">＋</span></summary>
+        <div className="genre-world__settings-panel">
+          <label>DENSITY <input type="range" min="1" max="3" value={density} onChange={event => setDensity(Number(event.target.value))} /></label>
+          <label>SCALE <input type="range" min="0.8" max="1.2" step="0.1" value={scale} onChange={event => setScale(Number(event.target.value))} /></label>
+          <label>SPACING <input type="range" min="1" max="4" value={looseness} onChange={event => setLooseness(Number(event.target.value))} /></label>
+          <label>TEXT <input type="checkbox" checked={showText} onChange={event => setShowText(event.target.checked)} /></label>
+          <label>MOTION <input type="checkbox" checked={motion} onChange={event => setMotion(event.target.checked)} /></label>
+        </div>
+      </details>
       {collection.length ? <div className="genre-world__records">{collection.map((album, index) => <article key={album.id} style={{ '--record-order': index % 4 } as CSSProperties}>
         <Link to={`/albums/${album.id}`} state={{ genreId: genre.id }}><ArchiveCover album={album} eager={index < 3} /><span>{String(index + 1).padStart(2, '0')} / {album.title}</span></Link>
         <SpotifySource url={album.url} /></article>)}</div>
@@ -235,7 +273,7 @@ export function AlbumPage() {
         {album.note && <p className="album-story__note">{album.note}</p>}
         <SpotifySource url={album.url} />
       </div></div>
-    {album.source === 'spotify' && <section className="album-story__classify"><div><span>PERSONAL INDEX / LOCAL ONLY</span><h2>Place this record in a world.</h2><p>Spotify does not provide reliable album genres here. These choices are yours and remain in this browser.</p></div>
+    {album.source === 'spotify' && <section className="album-story__classify"><div><span>PERSONAL INDEX / LOCAL ONLY</span><h2>Place this record in a world.</h2><p>Artist genre terms are mapped when Spotify provides them. You can override the result here; your choices remain in this browser.</p></div>
       <div className="album-story__genre-options">{genres.map(genre => <label key={genre.id}><input type="checkbox" checked={assigned.includes(genre.id)} onChange={event => setAlbumGenres(album.id, event.target.checked ? [...assigned, genre.id] : assigned.filter(id => id !== genre.id))} /><span>{genre.name}</span></label>)}</div></section>}
     <section className="album-story__tracks"><div className="album-story__tracks-heading"><span>THE SEQUENCE</span><h2>Tracks.</h2></div>
       {album.tracks.length ? <ol>{album.tracks.map((track, index) => <li key={track.id}><Link to={`/tracks/${track.id}`} state={{ genreId: fromGenre, albumId: album.id }}><span>{String(index + 1).padStart(2, '0')}</span><strong>{track.title}</strong><small>{track.duration}</small><span aria-hidden="true">↗</span></Link></li>)}</ol>
@@ -257,7 +295,7 @@ export function TrackPage() {
     <div className="track-story__spread"><div className="track-story__art">{art ? <img src={art} alt={`${track.albumTitle ?? relatedAlbum?.title ?? track.title} 封面`} />
       : relatedAlbum ? <ArchiveCover album={relatedAlbum} eager /> : <div className="track-story__no-art">ARTWORK<br />UNAVAILABLE</div>}
       <span>{track.albumTitle ?? relatedAlbum?.title ?? 'SAVED TRACK'}</span></div>
-      <div className="track-story__words"><span>TRACK / {track.duration}</span><h1>{track.title}</h1><p>{track.artist}</p><div className="track-story__lyric"><span>LYRICS / TEXT</span><p>Lyrics have not been provided.</p><small>We do not reproduce or invent unlicensed lyrics.</small></div>
+      <div className="track-story__words"><span>TRACK / {track.duration}</span><h1>{track.title}</h1><p>{track.artist}</p><div className="track-story__lyric" tabIndex={0} role="region" aria-label="Lyrics reading area"><span>LYRICS / TEXT</span><p>Lyrics are not available for this recording.</p><small>No licensed lyric source is connected. This reading space is ready when rights-cleared text is available.</small></div>
         {track.note && <p className="track-story__note">{track.note}</p>}<SpotifySource url={track.url} />
       </div></div><div className="track-story__footer"><Link to="/index">THE INDEX ↗</Link><span>A VISUAL RECORD / NO AUDIO DOWNLOADS</span></div>
   </div>

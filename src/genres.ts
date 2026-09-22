@@ -50,14 +50,39 @@ export function setAlbumGenres(albumId: string, selected: GenreId[]) {
   window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 
+const genreTerms: [GenreId, RegExp][] = [
+  ['ambient', /ambient|classical|orchestral|chamber|neo[- ]?classical|drone|minimalism/],
+  ['jazz', /jazz|bebop|swing|bossa nova|fusion jazz/],
+  ['soul', /r&b|rnb|soul|neo soul|funk|quiet storm/],
+  ['hip-hop', /hip[- ]?hop|rap|trap|drill|grime/],
+  ['rock', /\brock\b|metal|punk|grunge|hardcore/],
+  ['indie', /indie|alternative|shoegaze|dream pop|post[- ]?punk/],
+  ['dance', /dance|club|disco|house|techno|trance|edm/],
+  ['electronic', /electronic|electronica|synth|idm|downtempo|breakbeat/],
+  ['pop', /\bpop\b|k-pop|j-pop|synthpop/],
+]
+
+function inferredGenres(album: LibraryAlbum): GenreId[] {
+  const matched = new Set<GenreId>()
+  for (const term of album.artistGenres ?? []) {
+    const match = genreTerms.find(([, pattern]) => pattern.test(term.toLowerCase()))
+    if (match) matched.add(match[0])
+  }
+  return [...matched]
+}
 const demoGenreMap: Record<string, GenreId[]> = {
   Ambient: ['ambient'], Electronic: ['electronic'], Indie: ['indie'],
 }
 
 export function albumGenres(album: LibraryAlbum, assignments: Assignments): GenreId[] {
   if (album.source === 'demo') return demoGenreMap[album.genre ?? ''] ?? []
-  const assigned = assignments[album.id] ?? []
-  return assigned.filter(id => genres.some(genre => genre.id === id))
+  const manuallyAssigned = assignments[album.id]
+  if (manuallyAssigned) return manuallyAssigned.filter(id => genres.some(genre => genre.id === id))
+  const classified = album.classification
+  if (classified) {
+    return [...new Set([classified.primaryGenre, ...classified.secondaryGenres].filter((id): id is GenreId => Boolean(id) && genres.some(genre => genre.id === id)))]
+  }
+  return inferredGenres(album)
 }
 
 export function albumsForGenre(albums: LibraryAlbum[], genreId: GenreId, assignments: Assignments) {

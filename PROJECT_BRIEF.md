@@ -32,7 +32,7 @@ Music Visual Archive 是一个个人音乐视觉档案网站，核心命题是 *
 
 `Landing Page → Connect Your Library（Spotify 或 Demo Archive）→ The Archive in Motion → The Index → All Albums 或 Genre World → Album Detail → Track Detail`
 
-Spotify 真实收藏与虚构 Demo 数据是独立数据源。授权仅读取用户许可的元数据；真实专辑若没有可靠类型信息，保留在 All Albums，不推断类型。
+Spotify 真实收藏与虚构 Demo 数据是独立数据源。授权仅读取用户许可的元数据；真实专辑只根据可用的艺人类型词条进行保守关键词映射；词条缺失或不明确时保留在 All Albums，并允许本地手动覆盖。
 
 现有路由继续保留：
 
@@ -48,7 +48,7 @@ Spotify 真实收藏与虚构 Demo 数据是独立数据源。授权仅读取用
 | Album Detail | `/albums/:albumId` | 呈现专辑视觉档案与曲目入口 |
 | Track Detail | `/tracks/:trackId` | 呈现单曲视觉笔记与专辑上下文 |
 
-The Index 共包含十个文件夹：`All Albums` 与九个音乐类型。九个类型的正式名称尚未确定，开发中不得擅自补成最终分类；在确认前使用清楚标记的演示名称或类型 ID。
+The Index 共包含十个文件夹：`All Albums` 与九个音乐类型。第一轮采用 Pop、Electronic、R&B / Soul、Hip-Hop、Indie / Alternative、Rock、Jazz、Classical / Ambient 和 Dance / Club 九个空间；后续仍可根据视觉验收调整名称与分类映射。
 
 ## 5. 声音系统范围
 
