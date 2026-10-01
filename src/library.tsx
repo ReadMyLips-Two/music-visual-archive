@@ -4,6 +4,7 @@ import { disconnectSpotify, getSpotifySession, spotifyGet, SpotifyError } from '
 import { createProviderState, providerAuthKey, type MusicProvider, type MusicProviderState } from './providers'
 import { ACTIVE_PROVIDER_KEY, libraryCacheKey, readExactScopedCache } from './account-scope'
 import { classifyAlbums, classifyAlbumFromKnownData, normalizeClassification, summaryForClassifications, type AlbumClassification, type ClassificationSummary } from './genre-classification'
+import { shouldRunAutomaticClassification } from './genre-hydration'
 
 export type LibraryTrack = {
   source: MusicProvider
@@ -311,12 +312,20 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const classifyInBackground = async (next: MusicLibrary, run: number) => {
     const initial = Object.fromEntries(next.albums.map(album => [album.id, normalizeClassification(album.classification ?? classifyAlbumFromKnownData(album))]))
+    const albumsToClassify = next.albums.filter(album => !album.classification)
     const running = summaryForClassifications(next.albums, initial, 'running')
     setLibrary({ ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: running })
+    if (!shouldRunAutomaticClassification(next.albums, next.classification.status)) {
+      const ready = { ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: summaryForClassifications(next.albums, initial, 'ready') }
+      setLibrary(ready)
+      writeCachedLibrary(ready)
+      setProgress('')
+      return
+    }
     try {
-      const results = await classifyAlbums(next.albums, setProgress)
+      const results = await classifyAlbums(albumsToClassify, setProgress)
       if (run !== classificationRun.current) return
-      const classifications = Object.fromEntries(results.map(result => [result.album.id, normalizeClassification(result.classification)]))
+      const classifications = { ...initial, ...Object.fromEntries(results.map(result => [result.album.id, normalizeClassification(result.classification)])) }
       const summary = summaryForClassifications(next.albums, classifications, 'ready')
       const warnings = [...next.warnings]
       if (summary.unclassified > 0) warnings.push(`${summary.unclassified} 张专辑暂未完成可靠分类；它们仍保留在 All Albums。`)
@@ -358,11 +367,25 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         confirmedCache = readCachedLibrary(provider)
       }
       const cachedById = new Map((confirmedCache?.albums ?? []).map(album => [album.id, album.classification]))
-      const hydrated = { ...next, albums: next.albums.map(album => ({ ...album, classification: cachedById.get(album.id) })) }
+      const hasCompleteCachedClassification = confirmedCache?.classification.status === 'ready'
+        && next.albums.every(album => Boolean(cachedById.get(album.id)))
+      const hydratedClassifications = Object.fromEntries(next.albums.flatMap(album => {
+        const classification = cachedById.get(album.id)
+        return classification ? [[album.id, classification]] : []
+      }))
+      const hydrated = {
+        ...next,
+        albums: next.albums.map(album => ({ ...album, classification: cachedById.get(album.id) })),
+        classification: hasCompleteCachedClassification ? summaryForClassifications(next.albums, hydratedClassifications, 'ready') : next.classification,
+      }
       setLibrary(hydrated)
-      writeCachedLibrary(hydrated)
       setLibraryHydrated(true)
       setStatus('ready')
+      if (hasCompleteCachedClassification) {
+        writeCachedLibrary(hydrated)
+        setProgress('')
+        return true
+      }
       setProgress('正在后台整理音乐类型…')
       void classifyInBackground(hydrated, run)
       return true

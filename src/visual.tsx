@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type Ref, type WheelEvent as ReactWheelEvent } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useLibrary, type LibraryAlbum, type LibraryTrack } from './library'
-import { albumGenres, getGenreRecords, genres, resetAlbumGenres, setAlbumGenres, setAlbumPrimaryGenre, useGenreAssignments, type GenreDefinition, type GenreId } from './genres'
+import { albumGenres, canonicalGenreId, getGenreRecords, genres, resetAlbumGenres, setAlbumGenres, setAlbumPrimaryGenre, useGenreAssignments, type GenreDefinition, type GenreId } from './genres'
+import { getGenreHydrationState } from './genre-hydration'
 import { fetchLyrics, type LyricsResult, LyricsProviderError } from './lyrics'
 import { useAlbumIntroduction } from './album-intro'
 import ParticleText from './components/ParticleText'
@@ -984,23 +985,8 @@ function PopShelfPanel({ genre, collection, pending }: { genre: GenreDefinition;
   </section>
 }
 
-function useViewportMatch(query: string) {
-  const [matches, setMatches] = useState(() => typeof window !== 'undefined' && window.matchMedia(query).matches)
-  useEffect(() => {
-    const media = window.matchMedia(query)
-    const update = () => setMatches(media.matches)
-    update()
-    media.addEventListener('change', update)
-    return () => media.removeEventListener('change', update)
-  }, [query])
-  return matches
-}
-
 function PopWorldPage({ genre, collection, libraryHydrated, status, classification }: { genre: GenreDefinition; collection: LibraryAlbum[]; libraryHydrated: boolean; status: string; classification: ReturnType<typeof useLibrary>['library']['classification'] }) {
-  const isMobile = useViewportMatch('(max-width: 768px)')
-  const pending = isMobile
-    ? !libraryHydrated && collection.length === 0
-    : !libraryHydrated || status === 'loading' || classification.status === 'running'
+  const pending = !libraryHydrated || status === 'loading' || classification.status === 'running'
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const root = rootRef.current
@@ -1718,25 +1704,30 @@ function DanceWorldPage({ genre, collection, status, classification }: { genre: 
 
 export function GenreWorldPage() {
   const { genreId } = useParams()
-  const { library, libraryHydrated, status, progress, error } = useLibrary()
+  const { library, libraryHydrated, status, progress, error, connected } = useLibrary()
   const assignments = useGenreAssignments()
   const [density, setDensity] = useState(2)
   const [scale, setScale] = useState(1)
   const [looseness, setLooseness] = useState(2)
   const [showText, setShowText] = useState(true)
   const [motion, setMotion] = useState(true)
-  const genre = genres.find(item => item.id === genreId)
+  const genre = genres.find(item => item.id === canonicalGenreId(genreId))
   const collection = genre ? getGenreRecords(library.albums, genre.id, assignments) : []
+  const hydrationState = getGenreHydrationState({ connected, libraryHydrated, classificationStatus: library.classification.status })
+  const pendingStatus = hydrationState === 'ready' ? status : 'loading'
+  const pendingClassification = hydrationState === 'ready' || library.classification.status !== 'idle'
+    ? library.classification
+    : { ...library.classification, status: 'running' as const }
   if (!genre) return <MissingPage />
   if (genre.id === 'electronic') return <ElectronicWorldPage genre={genre} />
-  if (genre.id === 'pop') return <PopWorldPage genre={genre} collection={collection} libraryHydrated={libraryHydrated} status={status} classification={library.classification} />
-  if (genre.id === 'indie') return <IndieWorldPage genre={genre} collection={collection} status={status} progress={progress} error={error} />
-  if (genre.id === 'hip-hop') return <HipHopWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
-  if (genre.id === 'soul') return <SoulWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
-  if (genre.id === 'rock') return <RockWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
-  if (genre.id === 'jazz') return <JazzWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
-  if (genre.id === 'ambient') return <ClassicalWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
-  if (genre.id === 'dance') return <DanceWorldPage genre={genre} collection={collection} status={status} classification={library.classification} />
+  if (genre.id === 'pop') return <PopWorldPage genre={genre} collection={collection} libraryHydrated={libraryHydrated} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'indie') return <IndieWorldPage genre={genre} collection={collection} status={pendingStatus} progress={progress} error={error} />
+  if (genre.id === 'hip-hop') return <HipHopWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'soul') return <SoulWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'rock') return <RockWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'jazz') return <JazzWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'ambient') return <ClassicalWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
+  if (genre.id === 'dance') return <DanceWorldPage genre={genre} collection={collection} status={pendingStatus} classification={pendingClassification} />
   const worldStyle = {
     '--genre-accent': genre.color, '--genre-ink': genre.ink,
     '--world-scale': scale, '--world-gap': `${12 + looseness * 12}px`,

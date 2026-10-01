@@ -1,6 +1,7 @@
 import { useMemo, useSyncExternalStore } from 'react'
 import type { LibraryAlbum } from './library'
 import { accountScopeKey, readSessionAccountIdentity } from './account-scope'
+export { canonicalGenreId } from './genre-keys'
 
 export type GenreId = 'pop' | 'electronic' | 'soul' | 'hip-hop' | 'indie' | 'rock' | 'jazz' | 'ambient' | 'dance'
 
