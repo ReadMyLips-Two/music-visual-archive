@@ -29,10 +29,19 @@ export default async function handler(request, response) {
       },
     })
     const body = await result.text()
-    response.setHeader('Content-Type', result.headers.get('content-type') ?? 'application/json')
     response.setHeader('Cache-Control', 'public, s-maxage=86400, stale-while-revalidate=604800')
+    response.setHeader('Content-Type', 'application/json')
+    try {
+      JSON.parse(body)
+    } catch {
+      return response.status(502).json({
+        error: 'MusicBrainz upstream returned non-JSON data',
+        details: `Upstream HTTP ${result.status}`,
+      })
+    }
     return response.status(result.status).send(body)
   } catch {
+    response.setHeader('Content-Type', 'application/json')
     return response.status(502).json({ error: 'MusicBrainz request failed' })
   }
 }

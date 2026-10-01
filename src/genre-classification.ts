@@ -27,7 +27,7 @@ export type ClassificationSummary = {
 }
 export type ClassificationResult = { album: LibraryAlbum; classification: AlbumClassification }
 type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; status?: MetadataLookupStatus; reason?: string }
-const CACHE_KEY = 'mva-musicbrainz-cache-v1'
+export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v2'
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const GENRE_IDS: GenreId[] = ['pop','electronic','soul','hip-hop','indie','rock','jazz','ambient','dance']
 const synonyms: Record<GenreId, string[]> = {
@@ -43,8 +43,8 @@ const synonyms: Record<GenreId, string[]> = {
 }
 const genericTerms = new Set(['pop', 'rock', 'electronic', 'dance', 'alternative', 'soul'])
 const normalize = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,'and').replace(/[^a-z0-9]+/g,' ').trim()
-const readCache = (): Record<string, MbCacheEntry> => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}') as Record<string, MbCacheEntry> } catch { return {} } }
-const writeCache = (cache: Record<string, MbCacheEntry>) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)) } catch { /* private mode */ } }
+const readCache = (): Record<string, MbCacheEntry> => { try { return JSON.parse(localStorage.getItem(MUSICBRAINZ_CACHE_KEY) ?? '{}') as Record<string, MbCacheEntry> } catch { return {} } }
+const writeCache = (cache: Record<string, MbCacheEntry>) => { try { localStorage.setItem(MUSICBRAINZ_CACHE_KEY, JSON.stringify(cache)) } catch { /* private mode */ } }
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
 let queueTail = Promise.resolve()
 let lastRequestAt = 0
@@ -55,8 +55,14 @@ function throttled<T>(task: () => Promise<T>): Promise<T> {
 }
 async function mbFetch<T>(url: string): Promise<T> {
   const response = await throttled(() => fetch(url, { headers: { Accept: 'application/json' } }))
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!isJsonContentType(contentType)) throw new Error(`MusicBrainz non-JSON response: HTTP ${response.status}; content-type=${contentType || 'missing'}; url=${url}`)
   if (!response.ok) throw new Error(`MusicBrainz HTTP ${response.status}`)
   return response.json() as Promise<T>
+}
+
+export function isJsonContentType(contentType: string) {
+  return /(^|;)\s*application\/json\s*(;|$)/i.test(contentType) || /\+json\s*(;|$)/i.test(contentType)
 }
 type MbSearch = { 'release-groups'?: Array<{ id?: string; title?: string; 'first-release-date'?: string; score?: number; 'artist-credit'?: Array<{ name?: string; artist?: { name?: string } }> }> }
 type MbDetail = { tags?: Array<{ name?: string; count?: number }>; genres?: Array<{ name?: string; count?: number }> }
