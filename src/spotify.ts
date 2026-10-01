@@ -1,7 +1,7 @@
 import { providerAuthKey } from './providers'
 
 export const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID?.trim() ?? ''
-export const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:5173/callback'
+export const SPOTIFY_REDIRECT_URI = `${window.location.origin}/callback`
 const SCOPES = ['user-library-read', 'playlist-read-private', 'playlist-read-collaborative']
 const SESSION_KEY = providerAuthKey('spotify', 'session')
 const PENDING_KEY = providerAuthKey('spotify', 'pending')
@@ -65,7 +65,6 @@ export function disconnectSpotify() {
 
 export async function startSpotifyAuthorization() {
   if (!SPOTIFY_CLIENT_ID) throw new SpotifyError('缺少 VITE_SPOTIFY_CLIENT_ID。请先在 .env.local 配置并重启开发服务器。')
-  if (location.origin !== 'http://127.0.0.1:5173') throw new SpotifyError('Spotify 授权必须从 http://127.0.0.1:5173 启动。请关闭其他端口的开发服务器。')
   // A new authorization may belong to a different Spotify user. Do not let
   // the previous account identity authorize a cache read during that switch.
   sessionStorage.removeItem(providerAuthKey('spotify', 'account-id'))
