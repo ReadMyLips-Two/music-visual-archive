@@ -1,8 +1,11 @@
+import { providerAuthKey } from './providers'
+
 export const SPOTIFY_CLIENT_ID = import.meta.env.VITE_SPOTIFY_CLIENT_ID?.trim() ?? ''
 export const SPOTIFY_REDIRECT_URI = 'http://127.0.0.1:5173/callback'
 const SCOPES = ['user-library-read', 'playlist-read-private', 'playlist-read-collaborative']
-const SESSION_KEY = 'mva-spotify-session'
-const PENDING_KEY = 'mva-spotify-pending'
+const SESSION_KEY = providerAuthKey('spotify', 'session')
+const PENDING_KEY = providerAuthKey('spotify', 'pending')
+const LEGACY_SESSION_KEY = 'mva-spotify-session'
 
 export type SpotifySession = {
   accessToken: string
@@ -37,10 +40,15 @@ function encodeBase64Url(bytes: Uint8Array) {
 
 export function getSpotifySession(): SpotifySession | null {
   try {
-    const raw = sessionStorage.getItem(SESSION_KEY)
+    const raw = sessionStorage.getItem(SESSION_KEY) ?? sessionStorage.getItem(LEGACY_SESSION_KEY)
     if (!raw) return null
     const value = JSON.parse(raw) as SpotifySession
-    return value.accessToken && value.refreshToken && Number.isFinite(value.expiresAt) ? value : null
+    if (!value.accessToken || !value.refreshToken || !Number.isFinite(value.expiresAt)) return null
+    if (!sessionStorage.getItem(SESSION_KEY)) {
+      sessionStorage.setItem(SESSION_KEY, JSON.stringify(value))
+      sessionStorage.removeItem(LEGACY_SESSION_KEY)
+    }
+    return value
   } catch { return null }
 }
 
@@ -52,11 +60,15 @@ function saveSession(session: SpotifySession) {
 export function disconnectSpotify() {
   sessionStorage.removeItem(SESSION_KEY)
   sessionStorage.removeItem(PENDING_KEY)
+  sessionStorage.removeItem(LEGACY_SESSION_KEY)
 }
 
 export async function startSpotifyAuthorization() {
   if (!SPOTIFY_CLIENT_ID) throw new SpotifyError('缺少 VITE_SPOTIFY_CLIENT_ID。请先在 .env.local 配置并重启开发服务器。')
   if (location.origin !== 'http://127.0.0.1:5173') throw new SpotifyError('Spotify 授权必须从 http://127.0.0.1:5173 启动。请关闭其他端口的开发服务器。')
+  // A new authorization may belong to a different Spotify user. Do not let
+  // the previous account identity authorize a cache read during that switch.
+  sessionStorage.removeItem(providerAuthKey('spotify', 'account-id'))
   const verifier = randomUrlSafe(64)
   const state = randomUrlSafe(32)
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)))

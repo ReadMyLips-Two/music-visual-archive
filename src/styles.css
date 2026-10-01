@@ -11,7 +11,6 @@ button, input { font: inherit; }
 nav { display: flex; flex-wrap: wrap; gap: 12px 24px; margin-top: 20px; }
 nav a { font-size: 14px; text-decoration: none; padding: 4px 0; border-bottom: 2px solid transparent; }
 nav a.active { border-color: #355b48; font-weight: 650; }
-.demo-banner { padding: 12px 24px; text-align: center; font-size: 13px; background: #eaf0e7; }
 main { max-width: 1248px; min-height: 65vh; margin: auto; padding: 48px 24px 80px; }
 main:focus { outline: none; }
 .page-heading { max-width: 800px; margin-bottom: 32px; }

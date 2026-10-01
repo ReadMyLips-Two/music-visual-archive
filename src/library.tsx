@@ -1,10 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { albums as demoAlbums, type Album as DemoAlbum } from './data'
+import { disconnectAppleMusic, getAppleMusicSession, loadAppleMusicResources, type AppleMusicResource, AppleMusicError } from './apple-music'
 import { disconnectSpotify, getSpotifySession, spotifyGet, SpotifyError } from './spotify'
-import { classifyAlbums, classifyAlbumFromKnownData, summaryForClassifications, type AlbumClassification, type ClassificationSummary } from './genre-classification'
+import { createProviderState, providerAuthKey, type MusicProvider, type MusicProviderState } from './providers'
+import { ACTIVE_PROVIDER_KEY, libraryCacheKey, readExactScopedCache } from './account-scope'
+import { classifyAlbums, classifyAlbumFromKnownData, normalizeClassification, summaryForClassifications, type AlbumClassification, type ClassificationSummary } from './genre-classification'
 
 export type LibraryTrack = {
-  source: 'demo' | 'spotify'
+  source: MusicProvider
   id: string
   title: string
   artist: string
@@ -18,7 +20,7 @@ export type LibraryTrack = {
 }
 
 export type LibraryAlbum = {
-  source: 'demo' | 'spotify'
+  source: MusicProvider
   id: string
   title: string
   artist: string
@@ -45,10 +47,11 @@ export type LibraryPlaylist = {
 }
 
 export type MusicLibrary = {
-  source: 'demo' | 'spotify'
+  source: MusicProvider
   albums: LibraryAlbum[]
   tracks: LibraryTrack[]
   playlists: LibraryPlaylist[]
+  userId: string | null
   userName: string | null
   warnings: string[]
   classification: ClassificationSummary
@@ -58,6 +61,7 @@ type SpotifyArtist = { id?: string; name?: string }
 type SpotifyImage = { url?: string }
 type SpotifyAlbum = {
   id?: string; name?: string; release_date?: string; artists?: SpotifyArtist[]
+  genres?: string[]
   images?: SpotifyImage[]; external_urls?: { spotify?: string }
   tracks?: { items?: SpotifyTrack[] }
 }
@@ -72,6 +76,24 @@ type SpotifyPlaylist = {
   external_urls?: { spotify?: string }
 }
 type Page<T> = { items?: T[]; next?: string | null; offset?: number; limit?: number; total?: number }
+
+const emptyClassification = (): ClassificationSummary => ({ status: 'idle', total: 0, classified: 0, unclassified: 0, completed: 0, lastError: null })
+const ACCOUNT_CHANGE_EVENT = 'mva-library-account-change'
+const LIBRARY_CACHE_VERSION = 1
+
+const emptyLibrary = (source: MusicProvider): MusicLibrary => ({
+  source, albums: [], tracks: [], playlists: [], userId: null, userName: null, warnings: [], classification: emptyClassification(),
+})
+
+function readCachedLibrary(provider: MusicProvider): MusicLibrary | null {
+  const accountId = sessionStorage.getItem(providerAuthKey(provider, 'account-id'))
+  return readExactScopedCache<MusicLibrary>(localStorage, provider, accountId, LIBRARY_CACHE_VERSION)
+}
+
+function writeCachedLibrary(library: MusicLibrary) {
+  if (!library.userId) return
+  try { localStorage.setItem(libraryCacheKey(library.source, library.userId), JSON.stringify(library)) } catch { /* private mode or storage quota */ }
+}
 
 const duration = (ms?: number) => {
   if (!Number.isFinite(ms)) return '—'
@@ -94,11 +116,12 @@ const asTrack = (track: SpotifyTrack, albumId: string | null): LibraryTrack | nu
 const asAlbum = (album: SpotifyAlbum): LibraryAlbum | null => {
   if (!album.id || !album.name) return null
   const id = `spotify:${album.id}`
+  const genreTags = [...new Set((album.genres ?? []).filter(Boolean))]
   return {
     source: 'spotify', id, title: album.name,
     artist: album.artists?.map(artist => artist.name).filter(Boolean).join(', ') || 'Unknown artist',
     year: Number.parseInt(album.release_date?.slice(0, 4) ?? '', 10) || null,
-    genre: null, artistGenres: null, artwork: album.images?.[0]?.url ?? null,
+    genre: genreTags[0] ?? null, artistGenres: genreTags.length ? genreTags : null, artwork: album.images?.[0]?.url ?? null,
     artworkSmall: album.images?.[1]?.url ?? album.images?.[0]?.url ?? null,
     url: album.external_urls?.spotify ?? null, color: '#e5e6e3', note: null,
     tracks: (album.tracks?.items ?? []).map(track => asTrack(track, id)).filter((track): track is LibraryTrack => Boolean(track)),
@@ -128,27 +151,6 @@ async function readArtistGenres(saved: { album?: SpotifyAlbum }[], onProgress?: 
   }))
   return { result, limited: ids.length > selected.length || throttled }
 }
-const mapDemoAlbum = (album: DemoAlbum): LibraryAlbum => ({
-  source: 'demo', id: album.id, title: album.title, artist: album.artist,
-  year: album.year, genre: album.genre, artistGenres: null, artwork: null, artworkSmall: null, url: null,
-  color: album.color, note: album.note,
-  tracks: album.tracks.map(track => ({
-    source: 'demo', id: track.id, title: track.title, artist: album.artist,
-    duration: track.duration, albumId: album.id, url: null, note: track.note,
-    albumTitle: album.title, artwork: null, artworkSmall: null,
-  })),
-})
-
-export const demoLibrary: MusicLibrary = {
-  source: 'demo', albums: demoAlbums.map(mapDemoAlbum),
-  tracks: demoAlbums.flatMap(album => mapDemoAlbum(album).tracks),
-  playlists: [], userName: null, warnings: [], classification: { status: 'ready', total: demoAlbums.length, classified: demoAlbums.length, unclassified: 0, completed: demoAlbums.length, lastError: null },
-}
-
-const emptySpotifyLibrary: MusicLibrary = {
-  source: 'spotify', albums: [], tracks: [], playlists: [], userName: null, warnings: [], classification: { status: 'idle', total: 0, classified: 0, unclassified: 0, completed: 0, lastError: null },
-}
-
 async function fetchAll<T>(path: string, onProgress?: (message: string) => void): Promise<T[]> {
   const items: T[] = []
   let offset = 0
@@ -177,7 +179,7 @@ export async function loadSpotifyLibrary(onProgress?: (message: string) => void)
   const albums = savedAlbums.map(item => {
     const album = item.album && asAlbum(item.album)
     if (!album) return null
-    album.artistGenres = [...new Set(item.album?.artists?.flatMap(artist => artist.id ? artistGenres.get(artist.id) ?? [] : []) ?? [])]
+    album.artistGenres = [...new Set([...(album.artistGenres ?? []), ...(item.album?.artists?.flatMap(artist => artist.id ? artistGenres.get(artist.id) ?? [] : []) ?? [])])]
     return album
   }).filter((album): album is LibraryAlbum => Boolean(album))
   const tracks = savedTracks.map(item => item.track && asTrack(item.track, item.track.album?.id ? `spotify:${item.track.album.id}` : null))
@@ -218,18 +220,75 @@ export async function loadSpotifyLibrary(onProgress?: (message: string) => void)
     }
   } else warnings.push('未授予播放列表读取权限；已保存的专辑和歌曲仍可浏览。')
 
-  return { source: 'spotify', albums, tracks, playlists, userName: profile.display_name ?? null, warnings, classification: { status: 'idle', total: albums.length, classified: 0, unclassified: albums.length, completed: 0, lastError: null } }
+  return { source: 'spotify', albums, tracks, playlists, userId: profile.id ?? null, userName: profile.display_name ?? null, warnings, classification: { status: 'idle', total: albums.length, classified: 0, unclassified: albums.length, completed: 0, lastError: null } }
+}
+
+const appleArtwork = (artwork: { url?: string } | undefined, size: number) => artwork?.url?.replace('{w}', String(size)).replace('{h}', String(size)) ?? null
+
+const asAppleAlbum = (resource: AppleMusicResource): LibraryAlbum | null => {
+  const attributes = resource.attributes
+  if (!resource.id || !attributes?.name) return null
+  const genreNames = attributes.genreNames ?? []
+  return {
+    source: 'apple', id: `apple:${resource.id}`, title: attributes.name,
+    artist: attributes.artistName ?? 'Unknown artist',
+    year: Number.parseInt(attributes.releaseDate?.slice(0, 4) ?? '', 10) || null,
+    genre: genreNames[0] ?? null, artistGenres: genreNames.length ? genreNames : null,
+    artwork: appleArtwork(attributes.artwork, 800), artworkSmall: appleArtwork(attributes.artwork, 240),
+    url: attributes.url ?? null, color: attributes.artwork?.bgColor ? `#${attributes.artwork.bgColor}` : '#e5e6e3',
+    note: null, tracks: [],
+  }
+}
+
+const asAppleTrack = (resource: AppleMusicResource): LibraryTrack | null => {
+  const attributes = resource.attributes
+  if (!resource.id || !attributes?.name) return null
+  return {
+    source: 'apple', id: `apple:${resource.id}`, title: attributes.name,
+    artist: attributes.artistName ?? 'Unknown artist', duration: duration(attributes.durationInMillis),
+    albumId: null, albumTitle: attributes.albumName ?? null,
+    artwork: appleArtwork(attributes.artwork, 800), artworkSmall: appleArtwork(attributes.artwork, 240),
+    url: attributes.url ?? null, note: null,
+  }
+}
+
+const asApplePlaylist = (resource: AppleMusicResource): LibraryPlaylist | null => {
+  const attributes = resource.attributes
+  if (!resource.id || !attributes?.name) return null
+  return {
+    id: `apple:${resource.id}`, name: attributes.name, url: attributes.url ?? null,
+    artwork: appleArtwork(attributes.artwork, 600), total: attributes.trackCount ?? 0, tracks: [], access: 'readable',
+  }
+}
+
+export async function loadAppleMusicLibrary(onProgress?: (message: string) => void): Promise<MusicLibrary> {
+  try {
+    const resources = await loadAppleMusicResources(onProgress)
+    const albums = resources.albums.map(asAppleAlbum).filter((album): album is LibraryAlbum => Boolean(album))
+    const tracks = resources.songs.map(asAppleTrack).filter((track): track is LibraryTrack => Boolean(track))
+    const playlists = resources.playlists.map(asApplePlaylist).filter((playlist): playlist is LibraryPlaylist => Boolean(playlist))
+    return {
+      source: 'apple', albums, tracks, playlists, userId: null, userName: null,
+      warnings: ['Apple Music 个人库已读取；Apple Music API 不提供可直接显示的账户昵称。'],
+      classification: { status: 'idle', total: albums.length, classified: 0, unclassified: albums.length, completed: 0, lastError: null },
+    }
+  } catch (error) {
+    if (error instanceof AppleMusicError) throw error
+    throw new AppleMusicError('Apple Music 个人资料库读取失败，请重新授权后重试。')
+  }
 }
 
 type LibraryContextValue = {
   library: MusicLibrary
-  mode: 'demo' | 'spotify'
+  libraryHydrated: boolean
+  mode: MusicProvider
+  providerState: MusicProviderState
   status: 'idle' | 'loading' | 'ready' | 'error'
   progress: string
   error: string | null
   connected: boolean
-  useDemo: () => void
   activateSpotify: () => Promise<boolean>
+  activateApple: () => Promise<boolean>
   refresh: () => Promise<boolean>
   disconnect: () => void
 }
@@ -238,84 +297,133 @@ const LibraryContext = createContext<LibraryContextValue | null>(null)
 
 export function LibraryProvider({ children }: { children: ReactNode }) {
   const restoredRef = useRef(false)
-  const [mode, setMode] = useState<'demo' | 'spotify'>(() => sessionStorage.getItem('mva-library-mode') === 'spotify' && getSpotifySession() ? 'spotify' : 'demo')
-  const [library, setLibrary] = useState<MusicLibrary>(emptySpotifyLibrary)
-  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const initialProvider = getAppleMusicSession() ? 'apple' : 'spotify' as MusicProvider
+  const initialConnected = initialProvider === 'apple' ? Boolean(getAppleMusicSession()) : Boolean(getSpotifySession())
+  const initialCachedLibrary = initialConnected ? readCachedLibrary(initialProvider) : null
+  const [mode, setMode] = useState<MusicProvider>(initialProvider)
+  const [library, setLibrary] = useState<MusicLibrary>(() => initialCachedLibrary ?? emptyLibrary(initialProvider))
+  const [libraryHydrated, setLibraryHydrated] = useState(() => !initialConnected || Boolean(initialCachedLibrary))
+  const [status, setStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>(() => initialConnected && !initialCachedLibrary ? 'loading' : initialCachedLibrary ? 'ready' : 'idle')
   const [progress, setProgress] = useState('')
   const [error, setError] = useState<string | null>(null)
   const classificationRun = useRef(0)
-  const connected = Boolean(getSpotifySession())
+  const connected = mode === 'apple' ? Boolean(getAppleMusicSession()) : Boolean(getSpotifySession())
 
   const classifyInBackground = async (next: MusicLibrary, run: number) => {
-    const initial = Object.fromEntries(next.albums.map(album => [album.id, classifyAlbumFromKnownData(album)]))
+    const initial = Object.fromEntries(next.albums.map(album => [album.id, normalizeClassification(album.classification ?? classifyAlbumFromKnownData(album))]))
     const running = summaryForClassifications(next.albums, initial, 'running')
     setLibrary({ ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: running })
     try {
       const results = await classifyAlbums(next.albums, setProgress)
       if (run !== classificationRun.current) return
-      const classifications = Object.fromEntries(results.map(result => [result.album.id, result.classification]))
+      const classifications = Object.fromEntries(results.map(result => [result.album.id, normalizeClassification(result.classification)]))
       const summary = summaryForClassifications(next.albums, classifications, 'ready')
       const warnings = [...next.warnings]
       if (summary.unclassified > 0) warnings.push(`${summary.unclassified} 张专辑暂未完成可靠分类；它们仍保留在 All Albums。`)
-      setLibrary({ ...next, albums: next.albums.map(album => ({ ...album, classification: classifications[album.id] })), warnings, classification: summary })
+      const classifiedLibrary = { ...next, albums: next.albums.map(album => ({ ...album, classification: classifications[album.id] })), warnings, classification: summary }
+      setLibrary(classifiedLibrary)
+      writeCachedLibrary(classifiedLibrary)
       setProgress('')
     } catch (reason) {
       if (run !== classificationRun.current) return
-      setLibrary({ ...next, classification: { ...running, status: 'error', lastError: reason instanceof Error ? reason.message : '分类请求失败。' } })
+      const partiallyClassified = {
+        ...next,
+        albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })),
+        classification: { ...running, status: 'error' as const, lastError: reason instanceof Error ? reason.message : '分类请求失败。' },
+      }
+      setLibrary(partiallyClassified)
+      writeCachedLibrary(partiallyClassified)
       setProgress('')
     }
   }
 
-  const refresh = async () => {
+  const refreshFor = async (provider: MusicProvider) => {
     const run = ++classificationRun.current
+    setMode(provider)
+    sessionStorage.setItem(ACTIVE_PROVIDER_KEY, provider)
     setStatus('loading')
     setError(null)
-    setLibrary(emptySpotifyLibrary)
+    const cached = readCachedLibrary(provider)
+    if (cached) setLibrary(cached)
+    else setLibrary(emptyLibrary(provider))
+    setLibraryHydrated(Boolean(cached))
     try {
-      const next = await loadSpotifyLibrary(setProgress)
-      setLibrary(next)
+      const next = provider === 'apple' ? await loadAppleMusicLibrary(setProgress) : await loadSpotifyLibrary(setProgress)
+      let confirmedCache = cached
+      if (next.userId) {
+        sessionStorage.setItem(providerAuthKey(provider, 'account-id'), next.userId)
+        window.dispatchEvent(new Event(ACCOUNT_CHANGE_EVENT))
+        // The profile response is the first point at which an unknown
+        // account can be safely matched to an existing scoped cache.
+        confirmedCache = readCachedLibrary(provider)
+      }
+      const cachedById = new Map((confirmedCache?.albums ?? []).map(album => [album.id, album.classification]))
+      const hydrated = { ...next, albums: next.albums.map(album => ({ ...album, classification: cachedById.get(album.id) })) }
+      setLibrary(hydrated)
+      writeCachedLibrary(hydrated)
+      setLibraryHydrated(true)
       setStatus('ready')
       setProgress('正在后台整理音乐类型…')
-      void classifyInBackground(next, run)
+      void classifyInBackground(hydrated, run)
       return true
     } catch (reason) {
       setStatus('error')
+      setLibraryHydrated(Boolean(cached))
       setError(reason instanceof Error ? reason.message : '读取音乐库失败。')
       return false
     }
   }
 
+  const refresh = () => refreshFor(mode)
+
   const activateSpotify = async () => {
     setMode('spotify')
-    sessionStorage.setItem('mva-library-mode', 'spotify')
-    setLibrary(emptySpotifyLibrary)
-    return refresh()
+    return refreshFor('spotify')
+  }
+
+  const activateApple = async () => {
+    setMode('apple')
+    return refreshFor('apple')
   }
 
   useEffect(() => {
     if (restoredRef.current || location.pathname === '/callback') return
     restoredRef.current = true
-    if (mode === 'spotify' && getSpotifySession()) void refresh()
+    if (initialConnected) sessionStorage.setItem(ACTIVE_PROVIDER_KEY, initialProvider)
+    if (mode === 'apple' && getAppleMusicSession()) void refreshFor('apple')
+    else if (mode === 'spotify' && getSpotifySession()) void refreshFor('spotify')
   }, [])
 
-  const useDemo = () => {
-    setMode('demo')
-    sessionStorage.setItem('mva-library-mode', 'demo')
-    setLibrary(demoLibrary)
+  const disconnect = () => {
+    if (mode === 'apple') {
+      void disconnectAppleMusic()
+      sessionStorage.removeItem(providerAuthKey('apple', 'account-id'))
+    } else {
+      disconnectSpotify()
+      sessionStorage.removeItem(providerAuthKey('spotify', 'account-id'))
+    }
+    const nextProvider = mode === 'apple'
+      ? getSpotifySession() ? 'spotify' : null
+      : getAppleMusicSession() ? 'apple' : null
+    if (nextProvider) sessionStorage.setItem(ACTIVE_PROVIDER_KEY, nextProvider)
+    else sessionStorage.removeItem(ACTIVE_PROVIDER_KEY)
+    setLibrary(emptyLibrary(mode))
+    setLibraryHydrated(true)
+    window.dispatchEvent(new Event(ACCOUNT_CHANGE_EVENT))
     setStatus('idle')
+    setProgress('')
     setError(null)
   }
 
-  const disconnect = () => {
-    disconnectSpotify()
-    setLibrary(emptySpotifyLibrary)
-    useDemo()
-  }
-
+  const providerState = useMemo(() => createProviderState(mode, {
+    connectionStatus: connected ? 'connected' : 'disconnected',
+    accountId: library.userId,
+    libraryStatus: status === 'loading' ? 'loading' : status === 'ready' ? 'ready' : status === 'error' ? 'error' : 'idle',
+  }), [mode, connected, library.userId, status])
   const value = useMemo(() => ({
-    library: mode === 'demo' ? demoLibrary : library, mode, status, progress, error, connected,
-    useDemo, activateSpotify, refresh, disconnect,
-  }), [library, mode, status, progress, error, connected])
+    library, libraryHydrated, mode, providerState, status, progress, error, connected,
+    activateSpotify, activateApple, refresh, disconnect,
+  }), [library, libraryHydrated, mode, providerState, status, progress, error, connected])
   return <LibraryContext.Provider value={value}>{children}</LibraryContext.Provider>
 }
 

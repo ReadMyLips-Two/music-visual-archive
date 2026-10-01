@@ -41,7 +41,7 @@
 
 ### 4bd6864f88b77752598275d71ff68216.jpg — 多层研究板 / 作品集信息页
 
-版面以深色或强色块作底，在不同高度叠放内容平面；每个平面有细边框、页眉和独立内容。排版强调窗口、文件和实验板的关系，信息拆成多个可移动层。可借鉴到 Connect Your Library：把 Spotify、Demo Archive、Permission Notes 做成三张不同颜色的入口纸，横向滑入和折叠，不做普通登录表单。
+版面以深色或强色块作底，在不同高度叠放内容平面；每个平面有细边框、页眉和独立内容。排版强调窗口、文件和实验板的关系，信息拆成多个可移动层。可借鉴到 Connect Your Library：把 Spotify、Permission Notes 和当前读取状态做成不同层级的入口材料，横向滑入和折叠，不做普通登录表单。
 
 ### 5bac7e5a9bb8bb6bcaca2a67f007dfc2.jpg — 柔和色阶与人物图像的纵向海报
 
@@ -94,17 +94,17 @@
 
 ### Connect Your Library
 
-- 深紫或蓝色纸张整页底色，中央三张错位入口纸：Spotify、Demo Archive、Permission Notes。
+- 深紫或蓝色纸张整页底色，中央错位入口纸与 Permission Notes 状态层。
 - 入口名称使用衬线斜体或窄黑体；权限与状态使用小号等宽字。
 - 紫底、奶白纸张、荧光黄或珊瑚红标签；Spotify 绿只作品牌识别点。
 - 每张纸约 28–38vw，边缘覆盖，不做三张等宽卡片。
-- hover 时纸张抬高 6px，露出编号与摘要；点击 Spotify 纸张进入 PKCE，Demo 纸张进入 Motion。
+- hover 时纸张抬高 6px，露出编号与摘要；点击 Spotify 纸张进入 PKCE，读取完成后进入 Motion。
 - 纸张按层级向左滑出，下一页从底层纸张展开。
 
 ### The Archive in Motion
 
 - 中央开放阅读区与四周封面轨道，参考拼贴墙和作品集缩略图带。
-- 真实收藏使用浅纸张让封面成为主要色彩来源；Demo 显示明确演示标记。
+- 真实收藏使用浅纸张让封面成为主要色彩来源；缺失封面显示明确的不可用状态。
 - 2–4 条固定斜向轨道，速度差不超过 15%；首尾使用缓冲项避免循环跳回。
 - 桌面 14–28 张，主焦点 260–360px，远景 90–150px；移动端 5–8 张。
 - `Choose your visual world.` 嵌在轨道留白中，`ENTER THE INDEX →` 为细线入口，不使用遮罩卡片。
@@ -181,5 +181,5 @@
 3. 再重做 All Albums、Genre Directory 与九个 Genre Worlds。
 4. 最后重做 Album Detail 和 Track Detail 的纸张展开。
 5. 每批在 1440×900、1366×768、375×812 检查，确认无横向溢出、遮挡、不可点击和动画跳帧。
-6. Spotify 数据、Demo 数据、PKCE、声音状态和 Landing Page 不重新实现，只验证仍提供入口。
+6. Spotify 数据、PKCE、声音状态和 Landing Page 不重新实现，只验证仍提供入口。
 

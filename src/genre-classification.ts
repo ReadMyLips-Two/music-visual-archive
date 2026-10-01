@@ -1,7 +1,7 @@
 import type { LibraryAlbum } from './library'
 import type { GenreId } from './genres'
 
-export type ClassificationSource = 'musicbrainz' | 'spotify-artist-genres' | 'demo' | 'unclassified'
+export type ClassificationSource = 'musicbrainz' | 'spotify-artist-genres' | 'apple-genre-tags' | 'unclassified'
 export type AlbumClassification = {
   albumId: string
   sourcePlatform: LibraryAlbum['source']
@@ -38,6 +38,7 @@ const synonyms: Record<GenreId, string[]> = {
   ambient: ['ambient','classical','orchestral','chamber','neo-classical','drone','minimalism','modern classical','soundtrack'],
   dance: ['dance','club','disco','house','techno','trance','edm','dancehall','garage','uk garage'],
 }
+const genericTerms = new Set(['pop', 'rock', 'electronic', 'dance', 'alternative', 'soul'])
 const normalize = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,'and').replace(/[^a-z0-9]+/g,' ').trim()
 const readCache = (): Record<string, MbCacheEntry> => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) ?? '{}') as Record<string, MbCacheEntry> } catch { return {} } }
 const writeCache = (cache: Record<string, MbCacheEntry>) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(cache)) } catch { /* private mode */ } }
@@ -89,22 +90,54 @@ async function lookupMusicBrainz(album: LibraryAlbum): Promise<MbCacheEntry> {
   }
 }
 export function mapRawGenres(rawTags: string[]) {
-  const matched = new Set<GenreId>()
-  const normalizedTags = rawTags.map(normalize)
-  for (const genre of GENRE_IDS) if (synonyms[genre].some(term => normalizedTags.some(tag => tag === normalize(term) || tag.includes(normalize(term)))) ) matched.add(genre)
-  return [...matched]
+  return rankGenreCandidates(rawTags).map(candidate => candidate.id)
+}
+type GenreCandidate = { id: GenreId; score: number; evidence: string[] }
+export function rankGenreCandidates(rawTags: string[]): GenreCandidate[] {
+  const candidates = new Map<GenreId, GenreCandidate>()
+  for (const rawTag of rawTags) {
+    const tag = normalize(rawTag)
+    if (!tag) continue
+    for (const genre of GENRE_IDS) {
+      const matches = synonyms[genre].map(normalize).filter(term => tag === term || tag.includes(term))
+      if (!matches.length) continue
+      const best = matches.sort((a, b) => b.length - a.length)[0]
+      const exact = tag === best
+      const specificity = Math.min(2, best.split(' ').length * .35 + best.length / 30)
+      const genericPenalty = genericTerms.has(best) ? 1.15 : 0
+      const score = (exact ? 4 : 2) + specificity - genericPenalty
+      const existing = candidates.get(genre)
+      if (!existing) candidates.set(genre, { id: genre, score, evidence: [rawTag] })
+      else { existing.score += score * .55; existing.evidence.push(rawTag) }
+    }
+  }
+  return [...candidates.values()].sort((a, b) => b.score - a.score || GENRE_IDS.indexOf(a.id) - GENRE_IDS.indexOf(b.id))
+}
+export function selectAutomaticGenres(rawTags: string[], confidence: number) {
+  const ranked = rankGenreCandidates(rawTags)
+  if (!ranked.length || confidence <= 0) return { primaryGenre: null as GenreId | null, secondaryGenres: [] as GenreId[] }
+  const primary = ranked[0]
+  const reliablePrimary = confidence >= .55 && primary.score >= 2.9
+  if (!reliablePrimary) return { primaryGenre: null, secondaryGenres: [] }
+  const secondary = ranked.slice(1).find(candidate => candidate.score >= 2.9 && candidate.score >= primary.score * .68)
+  return { primaryGenre: primary.id, secondaryGenres: secondary ? [secondary.id] : [] }
 }
 export function classifyFromTags(album: LibraryAlbum, rawTags: string[], source: ClassificationSource, confidence: number, reason?: string): AlbumClassification {
-  const matched = mapRawGenres(rawTags)
-  return { albumId: album.id, sourcePlatform: album.source, primaryGenre: matched[0] ?? null, secondaryGenres: matched.slice(1), rawGenreTags: rawTags, classificationSource: source, confidence, userOverride: false, lastClassifiedAt: new Date().toISOString(), reason: reason ?? (matched.length ? undefined : '没有映射到 MVA 九个音乐空间的可靠标签。') }
+  const selected = selectAutomaticGenres(rawTags, confidence)
+  const hasGenre = Boolean(selected.primaryGenre)
+  return { albumId: album.id, sourcePlatform: album.source, primaryGenre: selected.primaryGenre, secondaryGenres: selected.secondaryGenres, rawGenreTags: rawTags, classificationSource: source, confidence, userOverride: false, lastClassifiedAt: new Date().toISOString(), reason: reason ?? (hasGenre ? undefined : '没有映射到 MVA 九个音乐空间的可靠标签。') }
+}
+
+export function normalizeClassification(classification: AlbumClassification): AlbumClassification {
+  const primary = classification.primaryGenre
+  const secondary = [...new Set(classification.secondaryGenres)].filter(id => id !== primary).slice(0, 1)
+  return { ...classification, secondaryGenres: secondary }
 }
 export function classifyAlbumFromKnownData(album: LibraryAlbum): AlbumClassification {
-  if (album.source === 'demo') return classifyFromTags(album, album.genre ? [album.genre] : [], 'demo', 1)
-  if (album.artistGenres?.length) return classifyFromTags(album, album.artistGenres, 'spotify-artist-genres', .62)
-  return classifyFromTags(album, [], 'unclassified', 0, 'Spotify 未提供艺人风格词条，等待 MusicBrainz 匹配。')
+  if (album.artistGenres?.length) return classifyFromTags(album, album.artistGenres, album.source === 'apple' ? 'apple-genre-tags' : 'spotify-artist-genres', .62)
+  return classifyFromTags(album, [], 'unclassified', 0, `${album.source === 'apple' ? 'Apple Music' : 'Spotify'} 未提供风格词条，等待 MusicBrainz 匹配。`)
 }
 export async function classifyAlbum(album: LibraryAlbum, onProgress?: (message: string) => void): Promise<AlbumClassification> {
-  if (album.source === 'demo') return classifyAlbumFromKnownData(album)
   const known = classifyAlbumFromKnownData(album)
   if (known.primaryGenre && known.confidence >= .8) return known
   onProgress?.(`正在查询 MusicBrainz：${album.title}`)

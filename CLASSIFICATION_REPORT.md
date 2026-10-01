@@ -16,18 +16,7 @@ src/genre-classification.ts 中的同义词表将原始标签映射到 POP、ELE
 
 ## 当前浏览器验证
 
-当前浏览器处于 Demo 模式，没有已授权的 Spotify 账户，因此本次无法报告真实收藏分类成功率。
-
-Demo 档案验证结果：
-
-- All Albums：3
-- Electronic：1
-- Indie / Alternative：1
-- Classical / Ambient：1
-- 其他空间：0
-- 未分类：0
-
-THE INDEX 和 Genre World 已读取同一分类结果；用户在专辑页保存的手动分类仍优先于自动结果。
+当前浏览器未授权 Spotify，因此无法报告真实收藏分类成功率。连接真实账户后，THE INDEX 和 Genre World 将读取同一分类结果；用户在专辑页保存的手动分类仍优先于自动结果。
 
 ## 仍需真实账户验证
 

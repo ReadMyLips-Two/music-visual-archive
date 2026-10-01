@@ -14,3 +14,7 @@ dist/
 *.key
 *.p12
 *.pfx
+.DS_Store
+.vite/
+*.tmp
+codex-write-test.txt

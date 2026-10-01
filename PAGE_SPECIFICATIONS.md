@@ -10,7 +10,7 @@
 
 路由切换后更新文档标题并把焦点移至主要内容或页面标题。未知专辑、曲目或类型显示清晰的 Not Found 状态，并提供返回档案的路径。
 
-Demo 模式持续以不干扰构图的方式说明内容为虚构占位；Spotify 模式明确标记个人收藏来源，并给出原内容的 Spotify 链接。
+页面始终明确标记个人收藏来源，并给出原内容的 Spotify 链接。
 
 ## 2. Landing Page (`/`)
 
@@ -38,7 +38,7 @@ Demo 模式持续以不干扰构图的方式说明内容为虚构占位；Spotif
 
 ## 3. The Archive in Motion (`/motion`)
 
-进入前的 `/connect` 提供官方 Spotify PKCE 授权入口与独立的 Demo Archive 入口；`/callback` 处理 state 校验、令牌交换和失败反馈。授权取消、权限不足和网络错误必须清楚提示。Spotify 模式只呈现实际读到的收藏，不以 Demo 数据填补空位。
+进入前的 `/connect` 提供官方 Spotify PKCE 授权入口；`/callback` 处理 state 校验、令牌交换和失败反馈。授权取消、权限不足和网络错误必须清楚提示。页面只呈现实际读到的收藏，不以虚构数据填补空位。
 
 ### 目的
 

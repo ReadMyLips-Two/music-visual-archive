@@ -30,16 +30,16 @@ Music Visual Archive 是一个个人音乐视觉档案网站，核心命题是 *
 
 主体验流程：
 
-`Landing Page → Connect Your Library（Spotify 或 Demo Archive）→ The Archive in Motion → The Index → All Albums 或 Genre World → Album Detail → Track Detail`
+`Landing Page → Connect Your Library → The Archive in Motion → The Index → All Albums 或 Genre World → Album Detail → Track Detail`
 
-Spotify 真实收藏与虚构 Demo 数据是独立数据源。授权仅读取用户许可的元数据；真实专辑只根据可用的艺人类型词条进行保守关键词映射；词条缺失或不明确时保留在 All Albums，并允许本地手动覆盖。
+Spotify 真实收藏是唯一音乐库来源。授权仅读取用户许可的元数据；真实专辑只根据可用的艺人类型词条进行保守关键词映射；词条缺失或不明确时保留在 All Albums，并允许本地手动覆盖。
 
 现有路由继续保留：
 
 | 页面 | 路由 | 核心职责 |
 | --- | --- | --- |
 | Landing Page | `/` | 建立项目命题与入口氛围 |
-| Connect Your Library | `/connect` | 选择 Spotify 个人收藏或明确标记的 Demo Archive |
+| Connect Your Library | `/connect` | 连接并读取 Spotify 个人收藏 |
 | Spotify Callback | `/callback` | 校验授权并返回个人档案 |
 | The Archive in Motion | `/motion` | 以连续运动建立档案整体印象 |
 | The Index | `/index` | 通过十个文件夹选择全部专辑或音乐类型 |
