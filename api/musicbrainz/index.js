@@ -12,10 +12,10 @@ export default async function handler(request, response) {
   }
 
   const path = pathValue(request.query?.path)
-  if (!path) return response.status(400).json({ error: 'Missing MusicBrainz path', details: 'Use /api/musicbrainz/ws/2/... for proxied MusicBrainz requests.' })
-  if (!path.startsWith('ws/2/')) return response.status(404).json({ error: 'Unsupported MusicBrainz path' })
+  if (!path) return response.status(400).json({ error: 'Missing MusicBrainz path', details: 'Provide path=/ws/2/... to proxy a MusicBrainz request.' })
+  if (!path.startsWith('/ws/2/') || path.includes('?') || path.includes('#') || path.includes('://')) return response.status(400).json({ error: 'Unsupported MusicBrainz path' })
 
-  const upstream = new URL(`${MUSICBRAINZ_ORIGIN}/${path}`)
+  const upstream = new URL(path, MUSICBRAINZ_ORIGIN)
   for (const [key, value] of Object.entries(request.query ?? {})) {
     if (key === 'path') continue
     for (const item of Array.isArray(value) ? value : [value]) {

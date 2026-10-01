@@ -37,6 +37,7 @@ const ERROR_TTL = 1000 * 60 * 10
 
 const fold = (value: string) => value.toLocaleLowerCase().normalize('NFKC').replace(/[^\p{L}\p{N}]+/gu, ' ').trim()
 const firstArtist = (album: LibraryAlbum) => album.artist.split(',')[0].trim()
+const musicBrainzUrl = (path: string, params: Record<string, string>) => `/api/musicbrainz?${new URLSearchParams({ path, ...params }).toString()}`
 const identityKey = (album: LibraryAlbum) => [album.id, fold(album.title), fold(firstArtist(album)), album.year ?? '', 'v1'].join('|')
 
 function readCache(): Record<string, CachedIntroduction> {
@@ -99,8 +100,8 @@ async function findWikipediaSummary(album: LibraryAlbum, signal: AbortSignal) {
 }
 
 async function findMusicBrainzPage(album: LibraryAlbum, signal: AbortSignal) {
-  const query = encodeURIComponent(`releasegroup:"${album.title}" AND artist:"${firstArtist(album)}"`)
-  const search = await fetchJson<MusicBrainzSearch>(`/api/musicbrainz/ws/2/release-group?query=${query}&fmt=json&limit=5`, signal)
+  const query = `releasegroup:"${album.title}" AND artist:"${firstArtist(album)}"`
+  const search = await fetchJson<MusicBrainzSearch>(musicBrainzUrl('/ws/2/release-group/', { query, fmt: 'json', limit: '5' }), signal)
   const title = fold(album.title)
   const artist = fold(firstArtist(album))
   const hit = (search['release-groups'] ?? []).find(candidate => {
@@ -109,7 +110,7 @@ async function findMusicBrainzPage(album: LibraryAlbum, signal: AbortSignal) {
     return candidate.id && candidateTitle === title && candidateArtist.includes(artist)
   })
   if (!hit?.id) return null
-  const detail = await fetchJson<MusicBrainzDetail>(`/api/musicbrainz/ws/2/release-group/${encodeURIComponent(hit.id)}?inc=url-rels+annotation&fmt=json`, signal)
+  const detail = await fetchJson<MusicBrainzDetail>(musicBrainzUrl(`/ws/2/release-group/${encodeURIComponent(hit.id)}`, { inc: 'url-rels annotation', fmt: 'json' }), signal)
   const wikipediaUrl = detail.relations?.find(relation => relation.type === 'wikipedia' && relation.url?.resource)?.url?.resource
   if (wikipediaUrl) {
     const pageTitle = decodeURIComponent(wikipediaUrl.split('/wiki/')[1] ?? '').replace(/_/g, ' ')

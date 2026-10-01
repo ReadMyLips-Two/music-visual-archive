@@ -27,7 +27,7 @@ export type ClassificationSummary = {
 }
 export type ClassificationResult = { album: LibraryAlbum; classification: AlbumClassification }
 type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; status?: MetadataLookupStatus; reason?: string }
-export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v3'
+export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v4'
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const GENRE_IDS: GenreId[] = ['pop','electronic','soul','hip-hop','indie','rock','jazz','ambient','dance']
 const synonyms: Record<GenreId, string[]> = {
@@ -43,6 +43,7 @@ const synonyms: Record<GenreId, string[]> = {
 }
 const genericTerms = new Set(['pop', 'rock', 'electronic', 'dance', 'alternative', 'soul'])
 const normalize = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/&/g,'and').replace(/[^a-z0-9]+/g,' ').trim()
+const musicBrainzUrl = (path: string, params: Record<string, string>) => `/api/musicbrainz?${new URLSearchParams({ path, ...params }).toString()}`
 const readCache = (): Record<string, MbCacheEntry> => { try { return JSON.parse(localStorage.getItem(MUSICBRAINZ_CACHE_KEY) ?? '{}') as Record<string, MbCacheEntry> } catch { return {} } }
 const writeCache = (cache: Record<string, MbCacheEntry>) => { try { localStorage.setItem(MUSICBRAINZ_CACHE_KEY, JSON.stringify(cache)) } catch { /* private mode */ } }
 const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
@@ -81,15 +82,15 @@ async function lookupMusicBrainz(album: LibraryAlbum): Promise<MbCacheEntry> {
   const key = `${normalize(album.title)}|${normalize(album.artist)}|${album.year ?? ''}`
   const cache = readCache(), cached = cache[key]
   if (cached && cached.expiresAt > Date.now()) return { ...cached, status: cached.status ?? (cached.tags.length ? 'success' : 'not-found') }
-  const query = encodeURIComponent(`releasegroup:"${album.title}" AND artist:"${album.artist.split(',')[0]}"`)
+  const query = `releasegroup:"${album.title}" AND artist:"${album.artist.split(',')[0]}"`
   try {
-    const search = await mbFetch<MbSearch>(`/api/musicbrainz/ws/2/release-group?query=${query}&fmt=json&limit=5`)
+    const search = await mbFetch<MbSearch>(musicBrainzUrl('/ws/2/release-group/', { query, fmt: 'json', limit: '5' }))
     const hit = (search['release-groups'] ?? []).map(item => ({ item, score: matchScore(album, item) })).sort((a,b) => b.score - a.score)[0]
     if (!hit || hit.score < .85 || !hit.item.id) {
       const result = { expiresAt: Date.now() + CACHE_TTL, tags: [], confidence: 0, status: 'not-found' as const, reason: 'MusicBrainz 找不到足够可靠的专辑与艺人匹配。' }
       cache[key] = result; writeCache(cache); return result
     }
-    const detail = await mbFetch<MbDetail>(`/api/musicbrainz/ws/2/release-group/${encodeURIComponent(hit.item.id)}?inc=genres+tags&fmt=json`)
+    const detail = await mbFetch<MbDetail>(musicBrainzUrl(`/ws/2/release-group/${encodeURIComponent(hit.item.id)}`, { inc: 'genres tags', fmt: 'json' }))
     const tags = [...new Set([...(detail.genres ?? []), ...(detail.tags ?? [])].map(tag => tag.name?.trim().toLowerCase()).filter(Boolean) as string[])]
     const result = { expiresAt: Date.now() + CACHE_TTL, tags, confidence: tags.length ? Math.min(.98, hit.score / 1.0) : .55, status: tags.length ? 'success' as const : 'not-found' as const, reason: tags.length ? undefined : 'MusicBrainz 匹配成功但没有可用风格标签。' }
     cache[key] = result; writeCache(cache); return result
