@@ -32,7 +32,8 @@ const CHANGE_EVENT = 'mva-genre-assignments-change'
 const ACCOUNT_CHANGE_EVENT = 'mva-library-account-change'
 const REPRESENTATIVE_KEY = 'mva-genre-representatives-v2'
 type GenreSelection = { genres: GenreId[]; primary: GenreId | null }
-type Assignments = Record<string, GenreSelection>
+export type GenreAssignments = Record<string, GenreSelection>
+type Assignments = GenreAssignments
 const readStored = (key: string): Record<string, unknown> => {
   try {
     const value = JSON.parse(localStorage.getItem(key) ?? '{}')
@@ -67,6 +68,10 @@ const readAccountAssignments = (): Assignments => {
   // v1 had no provider namespace, so ownership cannot be confirmed. Leave
   // it untouched and rebuild only from the current account's library.
   return {}
+}
+/** Read only the current account's manual choices; unknown identity returns none. */
+export function getCurrentAccountGenreAssignments(): GenreAssignments {
+  return readAccountAssignments()
 }
 const subscribe = (onChange: () => void) => {
   window.addEventListener(CHANGE_EVENT, onChange)

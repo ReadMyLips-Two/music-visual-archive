@@ -4,7 +4,8 @@ import { disconnectSpotify, getSpotifySession, spotifyGet, SpotifyError } from '
 import { createProviderState, providerAuthKey, type MusicProvider, type MusicProviderState } from './providers'
 import { ACTIVE_PROVIDER_KEY, libraryCacheKey, readExactScopedCache } from './account-scope'
 import { classifyAlbums, classifyAlbumFromKnownData, normalizeClassification, summaryForClassifications, type AlbumClassification, type ClassificationSummary } from './genre-classification'
-import { shouldRunAutomaticClassification } from './genre-hydration'
+import { hasCompleteClassificationCache, shouldRunAutomaticClassification } from './genre-hydration'
+import { getCurrentAccountGenreAssignments } from './genres'
 
 export type LibraryTrack = {
   source: MusicProvider
@@ -311,11 +312,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const connected = mode === 'apple' ? Boolean(getAppleMusicSession()) : Boolean(getSpotifySession())
 
   const classifyInBackground = async (next: MusicLibrary, run: number) => {
+    const manualAssignments = getCurrentAccountGenreAssignments()
     const initial = Object.fromEntries(next.albums.map(album => [album.id, normalizeClassification(album.classification ?? classifyAlbumFromKnownData(album))]))
-    const albumsToClassify = next.albums.filter(album => !album.classification)
+    const albumsToClassify = next.albums.filter(album => !album.classification && !manualAssignments[album.id])
     const running = summaryForClassifications(next.albums, initial, 'running')
     setLibrary({ ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: running })
-    if (!shouldRunAutomaticClassification(next.albums, next.classification.status)) {
+    if (!shouldRunAutomaticClassification(next.albums, next.classification.status, manualAssignments)) {
       const ready = { ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: summaryForClassifications(next.albums, initial, 'ready') }
       setLibrary(ready)
       writeCachedLibrary(ready)
@@ -367,8 +369,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         confirmedCache = readCachedLibrary(provider)
       }
       const cachedById = new Map((confirmedCache?.albums ?? []).map(album => [album.id, album.classification]))
-      const hasCompleteCachedClassification = confirmedCache?.classification.status === 'ready'
-        && next.albums.every(album => Boolean(cachedById.get(album.id)))
+      const hasCompleteCachedClassification = confirmedCache
+        ? hasCompleteClassificationCache(next.albums, Object.fromEntries(cachedById), confirmedCache.classification)
+        : false
       const hydratedClassifications = Object.fromEntries(next.albums.flatMap(album => {
         const classification = cachedById.get(album.id)
         return classification ? [[album.id, classification]] : []

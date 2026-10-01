@@ -18,8 +18,26 @@ export function getGenreHydrationState({
 export function shouldRunAutomaticClassification(
   albums: Array<{ classification?: unknown }>,
   classificationStatus: ClassificationState,
+  existingAssignments: Record<string, unknown> = {},
 ) {
-  return classificationStatus !== 'ready' || albums.some(album => !album.classification)
+  return classificationStatus !== 'ready' || albums.some(album => !album.classification && !existingAssignments[(album as { id?: string }).id ?? ''])
+}
+
+export function unclassifiedAlbumIds(
+  albums: Array<{ id: string; classification?: unknown }>,
+  existingAssignments: Record<string, unknown> = {},
+) {
+  return albums.filter(album => !album.classification && !existingAssignments[album.id]).map(album => album.id)
+}
+
+export function hasCompleteClassificationCache(
+  albums: Array<{ id: string }>,
+  classifications: Record<string, { primaryGenre?: unknown } | undefined>,
+  summary: { status: ClassificationState; completionState?: 'not-started' | 'running' | 'partial' | 'complete' },
+) {
+  const legacyComplete = summary.completionState === undefined && albums.every(album => Boolean(classifications[album.id]?.primaryGenre))
+  const complete = summary.completionState === 'complete' || legacyComplete
+  return summary.status === 'ready' && complete && albums.every(album => Boolean(classifications[album.id]))
 }
 
 export function canShowGenreEmpty(state: GenreHydrationState, recordCount: number) {

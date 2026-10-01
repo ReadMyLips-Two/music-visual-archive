@@ -2,6 +2,7 @@ import type { LibraryAlbum } from './library'
 import type { GenreId } from './genres'
 
 export type ClassificationSource = 'musicbrainz' | 'spotify-artist-genres' | 'apple-genre-tags' | 'unclassified'
+export type MetadataLookupStatus = 'not-needed' | 'success' | 'not-found' | 'failed'
 export type AlbumClassification = {
   albumId: string
   sourcePlatform: LibraryAlbum['source']
@@ -12,6 +13,7 @@ export type AlbumClassification = {
   confidence: number
   userOverride: boolean
   lastClassifiedAt: string
+  metadataLookup?: MetadataLookupStatus
   reason?: string
 }
 export type ClassificationSummary = {
@@ -21,9 +23,10 @@ export type ClassificationSummary = {
   unclassified: number
   completed: number
   lastError: string | null
+  completionState?: 'not-started' | 'running' | 'partial' | 'complete'
 }
 export type ClassificationResult = { album: LibraryAlbum; classification: AlbumClassification }
-type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; reason?: string }
+type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; status?: MetadataLookupStatus; reason?: string }
 const CACHE_KEY = 'mva-musicbrainz-cache-v1'
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const GENRE_IDS: GenreId[] = ['pop','electronic','soul','hip-hop','indie','rock','jazz','ambient','dance']
@@ -71,21 +74,21 @@ function matchScore(album: LibraryAlbum, hit: NonNullable<MbSearch['release-grou
 async function lookupMusicBrainz(album: LibraryAlbum): Promise<MbCacheEntry> {
   const key = `${normalize(album.title)}|${normalize(album.artist)}|${album.year ?? ''}`
   const cache = readCache(), cached = cache[key]
-  if (cached && cached.expiresAt > Date.now()) return cached
+  if (cached && cached.expiresAt > Date.now()) return { ...cached, status: cached.status ?? (cached.tags.length ? 'success' : 'not-found') }
   const query = encodeURIComponent(`releasegroup:"${album.title}" AND artist:"${album.artist.split(',')[0]}"`)
   try {
     const search = await mbFetch<MbSearch>(`/api/musicbrainz/ws/2/release-group?query=${query}&fmt=json&limit=5`)
     const hit = (search['release-groups'] ?? []).map(item => ({ item, score: matchScore(album, item) })).sort((a,b) => b.score - a.score)[0]
     if (!hit || hit.score < .85 || !hit.item.id) {
-      const result = { expiresAt: Date.now() + CACHE_TTL, tags: [], confidence: 0, reason: 'MusicBrainz 找不到足够可靠的专辑与艺人匹配。' }
+      const result = { expiresAt: Date.now() + CACHE_TTL, tags: [], confidence: 0, status: 'not-found' as const, reason: 'MusicBrainz 找不到足够可靠的专辑与艺人匹配。' }
       cache[key] = result; writeCache(cache); return result
     }
     const detail = await mbFetch<MbDetail>(`/api/musicbrainz/ws/2/release-group/${encodeURIComponent(hit.item.id)}?inc=genres+tags&fmt=json`)
     const tags = [...new Set([...(detail.genres ?? []), ...(detail.tags ?? [])].map(tag => tag.name?.trim().toLowerCase()).filter(Boolean) as string[])]
-    const result = { expiresAt: Date.now() + CACHE_TTL, tags, confidence: tags.length ? Math.min(.98, hit.score / 1.0) : .55, reason: tags.length ? undefined : 'MusicBrainz 匹配成功但没有可用风格标签。' }
+    const result = { expiresAt: Date.now() + CACHE_TTL, tags, confidence: tags.length ? Math.min(.98, hit.score / 1.0) : .55, status: tags.length ? 'success' as const : 'not-found' as const, reason: tags.length ? undefined : 'MusicBrainz 匹配成功但没有可用风格标签。' }
     cache[key] = result; writeCache(cache); return result
   } catch (error) {
-    const result = { expiresAt: Date.now() + 1000 * 60 * 10, tags: [], confidence: 0, reason: error instanceof Error ? error.message : 'MusicBrainz 请求失败。' }
+    const result = { expiresAt: Date.now() + 1000 * 60 * 10, tags: [], confidence: 0, status: 'failed' as const, reason: error instanceof Error ? error.message : 'MusicBrainz 请求失败。' }
     cache[key] = result; writeCache(cache); return result
   }
 }
@@ -122,27 +125,52 @@ export function selectAutomaticGenres(rawTags: string[], confidence: number) {
   const secondary = ranked.slice(1).find(candidate => candidate.score >= 2.9 && candidate.score >= primary.score * .68)
   return { primaryGenre: primary.id, secondaryGenres: secondary ? [secondary.id] : [] }
 }
-export function classifyFromTags(album: LibraryAlbum, rawTags: string[], source: ClassificationSource, confidence: number, reason?: string): AlbumClassification {
+export function classifyFromTags(album: LibraryAlbum, rawTags: string[], source: ClassificationSource, confidence: number, reason?: string, metadataLookup: MetadataLookupStatus = source === 'musicbrainz' ? 'success' : source === 'unclassified' ? 'not-found' : 'not-needed'): AlbumClassification {
   const selected = selectAutomaticGenres(rawTags, confidence)
   const hasGenre = Boolean(selected.primaryGenre)
-  return { albumId: album.id, sourcePlatform: album.source, primaryGenre: selected.primaryGenre, secondaryGenres: selected.secondaryGenres, rawGenreTags: rawTags, classificationSource: source, confidence, userOverride: false, lastClassifiedAt: new Date().toISOString(), reason: reason ?? (hasGenre ? undefined : '没有映射到 MVA 九个音乐空间的可靠标签。') }
+  return { albumId: album.id, sourcePlatform: album.source, primaryGenre: selected.primaryGenre, secondaryGenres: selected.secondaryGenres, rawGenreTags: rawTags, classificationSource: source, confidence, userOverride: false, lastClassifiedAt: new Date().toISOString(), metadataLookup, reason: reason ?? (hasGenre ? undefined : '没有映射到 MVA 九个音乐空间的可靠标签。') }
 }
 
 export function normalizeClassification(classification: AlbumClassification): AlbumClassification {
   const primary = classification.primaryGenre
   const secondary = [...new Set(classification.secondaryGenres)].filter(id => id !== primary).slice(0, 1)
-  return { ...classification, secondaryGenres: secondary }
+  return { ...classification, secondaryGenres: secondary, metadataLookup: classification.metadataLookup ?? (classification.classificationSource === 'musicbrainz' ? (classification.primaryGenre ? 'success' : 'not-found') : 'not-needed') }
 }
 export function classifyAlbumFromKnownData(album: LibraryAlbum): AlbumClassification {
-  if (album.artistGenres?.length) return classifyFromTags(album, album.artistGenres, album.source === 'apple' ? 'apple-genre-tags' : 'spotify-artist-genres', .62)
+  const knownTags = [album.genre, ...(album.artistGenres ?? [])].filter((tag): tag is string => Boolean(tag))
+  if (knownTags.length) return classifyFromTags(album, knownTags, album.source === 'apple' ? 'apple-genre-tags' : 'spotify-artist-genres', .62)
   return classifyFromTags(album, [], 'unclassified', 0, `${album.source === 'apple' ? 'Apple Music' : 'Spotify'} 未提供风格词条，等待 MusicBrainz 匹配。`)
 }
+
+type ClassificationDiagnostic = {
+  albumId: string
+  album: string
+  artist: string
+  metadataSource: ClassificationSource
+  metadataTags: string[]
+  normalizedGenre: string[]
+  finalMvaGenre: string | null
+  failureReason?: string
+}
+let diagnosticAttempts = 0
+function reportClassificationDiagnostic(diagnostic: ClassificationDiagnostic) {
+  const dev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV)
+  if (!dev || diagnosticAttempts >= 10) return
+  diagnosticAttempts += 1
+  console.debug('[MVA classification]', diagnostic)
+}
+
 export async function classifyAlbum(album: LibraryAlbum, onProgress?: (message: string) => void): Promise<AlbumClassification> {
   const known = classifyAlbumFromKnownData(album)
-  if (known.primaryGenre && known.confidence >= .8) return known
+  if (known.primaryGenre) {
+    reportClassificationDiagnostic({ albumId: album.id, album: album.title, artist: album.artist, metadataSource: known.classificationSource, metadataTags: known.rawGenreTags, normalizedGenre: [known.primaryGenre, ...known.secondaryGenres].filter((genre): genre is GenreId => Boolean(genre)), finalMvaGenre: known.primaryGenre, failureReason: known.reason })
+    return known
+  }
   onProgress?.(`正在查询 MusicBrainz：${album.title}`)
   const mb = await lookupMusicBrainz(album)
-  return classifyFromTags(album, mb.tags, 'musicbrainz', mb.confidence, mb.reason)
+  const result = classifyFromTags(album, mb.tags, 'musicbrainz', mb.confidence, mb.reason, mb.status ?? 'not-found')
+  reportClassificationDiagnostic({ albumId: album.id, album: album.title, artist: album.artist, metadataSource: 'musicbrainz', metadataTags: mb.tags, normalizedGenre: mapRawGenres(mb.tags), finalMvaGenre: result.primaryGenre, failureReason: result.reason })
+  return result
 }
 export async function classifyAlbums(albums: LibraryAlbum[], onProgress?: (message: string) => void): Promise<ClassificationResult[]> {
   const results: ClassificationResult[] = []
@@ -151,5 +179,9 @@ export async function classifyAlbums(albums: LibraryAlbum[], onProgress?: (messa
 }
 export function summaryForClassifications(albums: LibraryAlbum[], classifications: Record<string, AlbumClassification>, status: ClassificationSummary['status'] = 'ready', lastError: string | null = null): ClassificationSummary {
   const total = albums.length, classified = albums.filter(album => Boolean(classifications[album.id]?.primaryGenre)).length
-  return { status, total, classified, unclassified: total - classified, completed: Object.keys(classifications).length, lastError }
+  const unclassified = total - classified
+  const failedLookups = albums.some(album => classifications[album.id]?.metadataLookup === 'failed')
+  const allProcessed = albums.every(album => Boolean(classifications[album.id]))
+  const completionState = status === 'idle' ? 'not-started' : status === 'running' ? 'running' : status === 'error' || failedLookups || !allProcessed || unclassified > 0 ? 'partial' : 'complete'
+  return { status, total, classified, unclassified, completed: albums.filter(album => Boolean(classifications[album.id])).length, lastError, completionState }
 }
