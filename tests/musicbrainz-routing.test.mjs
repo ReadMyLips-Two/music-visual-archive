@@ -4,7 +4,6 @@ import { readFile } from 'node:fs/promises'
 import { classifyAlbum, isJsonContentType, MUSICBRAINZ_CACHE_KEY } from '../src/genre-classification.ts'
 import { albumGenres } from '../src/genres.ts'
 import musicbrainzRootHandler from '../api/musicbrainz/index.js'
-import musicbrainzPathHandler from '../api/musicbrainz/[...path].js'
 
 const album = {
   source: 'spotify', id: 'spotify:album-routing-test', title: 'Routing Test', artist: 'Routing Artist', year: 2024,
@@ -29,19 +28,28 @@ test('the exact MusicBrainz API entrypoint always returns JSON', async () => {
   assert.equal(typeof response.body.error, 'string')
 })
 
-test('the proxied MusicBrainz path returns JSON when upstream returns JSON', async () => {
+test('the nested rewrite reaches the exact proxy and preserves query parameters', async () => {
   const originalFetch = globalThis.fetch
-  globalThis.fetch = async () => ({
-    status: 200,
-    headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
-    text: async () => JSON.stringify({ 'release-groups': [] }),
-  })
+  let upstreamUrl = null
+  globalThis.fetch = async url => {
+    upstreamUrl = String(url)
+    return {
+      status: 200,
+      headers: { get: name => name.toLowerCase() === 'content-type' ? 'application/json' : null },
+      text: async () => JSON.stringify({ 'release-groups': [] }),
+    }
+  }
   const response = mockResponse()
-  await musicbrainzPathHandler({ method: 'GET', query: { path: ['ws', '2', 'release-group'], fmt: 'json', limit: '1' } }, response)
+  await musicbrainzRootHandler({ method: 'GET', query: { path: 'ws/2/release-group', query: 'releasegroup:"Discovery"', fmt: 'json', limit: '1' } }, response)
   globalThis.fetch = originalFetch
   assert.equal(response.statusCode, 200)
   assert.equal(response.headers['Content-Type'], 'application/json')
   assert.deepEqual(JSON.parse(response.body), { 'release-groups': [] })
+  const parsed = new URL(upstreamUrl)
+  assert.equal(parsed.pathname, '/ws/2/release-group')
+  assert.equal(parsed.searchParams.get('query'), 'releasegroup:"Discovery"')
+  assert.equal(parsed.searchParams.get('fmt'), 'json')
+  assert.equal(parsed.searchParams.get('limit'), '1')
 })
 
 test('the SPA rewrite explicitly excludes API paths', async () => {
@@ -50,6 +58,8 @@ test('the SPA rewrite explicitly excludes API paths', async () => {
   assert.match(source, /\(\?!api/)
   assert.match(source, /api\(\?:\/\|\$\)/)
   assert.notEqual(source, '/(.*)')
+  const nested = config.rewrites.find(entry => entry.source === '/api/musicbrainz/:path*')
+  assert.deepEqual(nested, { source: '/api/musicbrainz/:path*', destination: '/api/musicbrainz?path=:path*' })
 })
 
 test('non-JSON metadata responses are rejected before parsing', () => {
@@ -84,5 +94,5 @@ test('manual genre choices remain authoritative across metadata cache migration'
     [album.id]: { genres: ['pop'], primary: 'pop' },
   })
   assert.deepEqual(records, ['pop'])
-  assert.equal(MUSICBRAINZ_CACHE_KEY, 'mva-musicbrainz-cache-v2')
+  assert.equal(MUSICBRAINZ_CACHE_KEY, 'mva-musicbrainz-cache-v3')
 })

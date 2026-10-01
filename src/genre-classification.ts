@@ -27,7 +27,7 @@ export type ClassificationSummary = {
 }
 export type ClassificationResult = { album: LibraryAlbum; classification: AlbumClassification }
 type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; status?: MetadataLookupStatus; reason?: string }
-export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v2'
+export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v3'
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const GENRE_IDS: GenreId[] = ['pop','electronic','soul','hip-hop','indie','rock','jazz','ambient','dance']
 const synonyms: Record<GenreId, string[]> = {
