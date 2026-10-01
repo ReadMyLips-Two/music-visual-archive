@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import { disconnectAppleMusic, getAppleMusicSession, loadAppleMusicResources, type AppleMusicResource, AppleMusicError } from './apple-music'
 import { disconnectSpotify, getSpotifySession, spotifyGet, SpotifyError } from './spotify'
 import { createProviderState, providerAuthKey, type MusicProvider, type MusicProviderState } from './providers'
-import { ACTIVE_PROVIDER_KEY, libraryCacheKey, readExactScopedCache } from './account-scope'
+import { ACTIVE_PROVIDER_KEY, libraryCacheKey, readExactScopedCache, readSessionAccountIdentity } from './account-scope'
 import { classifyAlbums, classifyAlbumFromKnownData, normalizeClassification, summaryForClassifications, type AlbumClassification, type ClassificationSummary } from './genre-classification'
 import { hasCompleteClassificationCache, shouldRunAutomaticClassification } from './genre-hydration'
 import { getCurrentAccountGenreAssignments } from './genres'
@@ -79,7 +79,7 @@ type SpotifyPlaylist = {
 }
 type Page<T> = { items?: T[]; next?: string | null; offset?: number; limit?: number; total?: number }
 
-const emptyClassification = (): ClassificationSummary => ({ status: 'idle', total: 0, classified: 0, unclassified: 0, completed: 0, lastError: null })
+const emptyClassification = (): ClassificationSummary => ({ status: 'idle', total: 0, classified: 0, unclassified: 0, completed: 0, processed: 0, retryableFailures: 0, permanentNoMatch: 0, lastError: null, completionState: 'idle' })
 const ACCOUNT_CHANGE_EVENT = 'mva-library-account-change'
 const LIBRARY_CACHE_VERSION = 1
 
@@ -222,7 +222,7 @@ export async function loadSpotifyLibrary(onProgress?: (message: string) => void)
     }
   } else warnings.push('未授予播放列表读取权限；已保存的专辑和歌曲仍可浏览。')
 
-  return { source: 'spotify', albums, tracks, playlists, userId: profile.id ?? null, userName: profile.display_name ?? null, warnings, classification: { status: 'idle', total: albums.length, classified: 0, unclassified: albums.length, completed: 0, lastError: null } }
+  return { source: 'spotify', albums, tracks, playlists, userId: profile.id ?? null, userName: profile.display_name ?? null, warnings, classification: { ...emptyClassification(), total: albums.length, unclassified: albums.length } }
 }
 
 const appleArtwork = (artwork: { url?: string } | undefined, size: number) => artwork?.url?.replace('{w}', String(size)).replace('{h}', String(size)) ?? null
@@ -272,7 +272,7 @@ export async function loadAppleMusicLibrary(onProgress?: (message: string) => vo
     return {
       source: 'apple', albums, tracks, playlists, userId: null, userName: null,
       warnings: ['Apple Music 个人库已读取；Apple Music API 不提供可直接显示的账户昵称。'],
-      classification: { status: 'idle', total: albums.length, classified: 0, unclassified: albums.length, completed: 0, lastError: null },
+      classification: { ...emptyClassification(), total: albums.length, unclassified: albums.length },
     }
   } catch (error) {
     if (error instanceof AppleMusicError) throw error
@@ -309,46 +309,82 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [progress, setProgress] = useState('')
   const [error, setError] = useState<string | null>(null)
   const classificationRun = useRef(0)
+  const classificationAbort = useRef<AbortController | null>(null)
   const connected = mode === 'apple' ? Boolean(getAppleMusicSession()) : Boolean(getSpotifySession())
 
-  const classifyInBackground = async (next: MusicLibrary, run: number) => {
+  const classifyInBackground = async (next: MusicLibrary, run: number, controller: AbortController) => {
     const manualAssignments = getCurrentAccountGenreAssignments()
-    const initial = Object.fromEntries(next.albums.map(album => [album.id, normalizeClassification(album.classification ?? classifyAlbumFromKnownData(album))]))
-    const albumsToClassify = next.albums.filter(album => !album.classification && !manualAssignments[album.id])
-    const running = summaryForClassifications(next.albums, initial, 'running')
-    setLibrary({ ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: running })
-    if (!shouldRunAutomaticClassification(next.albums, next.classification.status, manualAssignments)) {
-      const ready = { ...next, albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })), classification: summaryForClassifications(next.albums, initial, 'ready') }
-      setLibrary(ready)
-      writeCachedLibrary(ready)
+    const manualIds = new Set(Object.keys(manualAssignments))
+    const classifications: Record<string, AlbumClassification> = Object.fromEntries(next.albums.flatMap(album => {
+      const classification = album.classification?.primaryGenre ? normalizeClassification(album.classification) : null
+      return classification ? [[album.id, classification]] : []
+    }))
+    for (const album of next.albums) {
+      if (classifications[album.id] || manualIds.has(album.id)) continue
+      const known = normalizeClassification(classifyAlbumFromKnownData(album))
+      if (known.primaryGenre) classifications[album.id] = known
+    }
+    const albumsToClassify = next.albums.filter(album => !classifications[album.id] && !manualIds.has(album.id))
+    let retryableFailures = 0
+    let permanentNoMatch = 0
+    const isActive = () => {
+      if (controller.signal.aborted || run !== classificationRun.current) return false
+      if (next.source === 'spotify') {
+        const identity = readSessionAccountIdentity(sessionStorage)
+        return identity?.provider === 'spotify' && identity.accountId === next.userId
+      }
+      return Boolean(getAppleMusicSession())
+    }
+    const publish = (status: 'running' | 'ready', lastError: string | null = null, warnings = next.warnings) => {
+      if (!isActive()) return false
+      const summary = summaryForClassifications(next.albums, classifications, status, lastError, { manualAssignmentIds: manualIds, retryableFailures, permanentNoMatch })
+      const albums = next.albums.map(album => {
+        const classification = classifications[album.id]
+        if (classification) return { ...album, classification }
+        const { classification: _staleClassification, ...withoutClassification } = album
+        return withoutClassification
+      })
+      const current = { ...next, albums, warnings, classification: summary }
+      setLibrary(current)
+      writeCachedLibrary(current)
+      return true
+    }
+    publish('running')
+    if (!albumsToClassify.length || !shouldRunAutomaticClassification(next.albums, next.classification.status, manualAssignments)) {
+      publish('ready')
       setProgress('')
       return
     }
     try {
-      const results = await classifyAlbums(albumsToClassify, setProgress)
-      if (run !== classificationRun.current) return
-      const classifications = { ...initial, ...Object.fromEntries(results.map(result => [result.album.id, normalizeClassification(result.classification)])) }
-      const summary = summaryForClassifications(next.albums, classifications, 'ready')
-      const warnings = [...next.warnings]
-      if (summary.unclassified > 0) warnings.push(`${summary.unclassified} 张专辑暂未完成可靠分类；它们仍保留在 All Albums。`)
-      const classifiedLibrary = { ...next, albums: next.albums.map(album => ({ ...album, classification: classifications[album.id] })), warnings, classification: summary }
-      setLibrary(classifiedLibrary)
-      writeCachedLibrary(classifiedLibrary)
+      await classifyAlbums(albumsToClassify, setProgress, {
+        signal: controller.signal,
+        isActive,
+        onResult: (result) => {
+          if (!isActive()) return
+          const classification = normalizeClassification(result.classification)
+          classifications[result.album.id] = classification
+          retryableFailures = Object.values(classifications).filter(item => item.metadataLookup === 'retryable-failure').length
+          permanentNoMatch = Object.values(classifications).filter(item => item.metadataLookup === 'not-found').length
+          publish('running')
+        },
+      })
+      if (!isActive()) return
+      const finalSummary = summaryForClassifications(next.albums, classifications, 'ready', null, { manualAssignmentIds: manualIds, retryableFailures, permanentNoMatch })
+      const warnings = [...next.warnings.filter(warning => !warning.includes('暂未完成可靠分类'))]
+      if (finalSummary.unclassified > 0) warnings.push(`${finalSummary.unclassified} 张专辑暂未完成可靠分类；它们仍保留在 All Albums。`)
+      publish('ready', null, warnings)
       setProgress('')
     } catch (reason) {
-      if (run !== classificationRun.current) return
-      const partiallyClassified = {
-        ...next,
-        albums: next.albums.map(album => ({ ...album, classification: initial[album.id] })),
-        classification: { ...running, status: 'error' as const, lastError: reason instanceof Error ? reason.message : '分类请求失败。' },
-      }
-      setLibrary(partiallyClassified)
-      writeCachedLibrary(partiallyClassified)
+      if (!isActive() || reason instanceof DOMException && reason.name === 'AbortError') return
+      publish('ready', reason instanceof Error ? reason.message : '分类请求失败。')
       setProgress('')
     }
   }
 
   const refreshFor = async (provider: MusicProvider) => {
+    classificationAbort.current?.abort()
+    const controller = new AbortController()
+    classificationAbort.current = controller
     const run = ++classificationRun.current
     setMode(provider)
     sessionStorage.setItem(ACTIVE_PROVIDER_KEY, provider)
@@ -390,7 +426,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         return true
       }
       setProgress('正在后台整理音乐类型…')
-      void classifyInBackground(hydrated, run)
+      void classifyInBackground(hydrated, run, controller)
       return true
     } catch (reason) {
       setStatus('error')
@@ -420,7 +456,15 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     else if (mode === 'spotify' && getSpotifySession()) void refreshFor('spotify')
   }, [])
 
+  useEffect(() => () => {
+    classificationAbort.current?.abort()
+    classificationRun.current += 1
+  }, [])
+
   const disconnect = () => {
+    classificationAbort.current?.abort()
+    classificationAbort.current = null
+    classificationRun.current += 1
     if (mode === 'apple') {
       void disconnectAppleMusic()
       sessionStorage.removeItem(providerAuthKey('apple', 'account-id'))

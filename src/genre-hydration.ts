@@ -20,7 +20,11 @@ export function shouldRunAutomaticClassification(
   classificationStatus: ClassificationState,
   existingAssignments: Record<string, unknown> = {},
 ) {
-  return classificationStatus !== 'ready' || albums.some(album => !album.classification && !existingAssignments[(album as { id?: string }).id ?? ''])
+  return classificationStatus !== 'ready' || albums.some(album => {
+    const classification = album.classification
+    const hasValidClassification = Boolean(classification && typeof classification === 'object' && 'primaryGenre' in classification && (classification as { primaryGenre?: unknown }).primaryGenre)
+    return !hasValidClassification && !existingAssignments[(album as { id?: string }).id ?? '']
+  })
 }
 
 export function unclassifiedAlbumIds(
@@ -33,7 +37,7 @@ export function unclassifiedAlbumIds(
 export function hasCompleteClassificationCache(
   albums: Array<{ id: string }>,
   classifications: Record<string, { primaryGenre?: unknown } | undefined>,
-  summary: { status: ClassificationState; completionState?: 'not-started' | 'running' | 'partial' | 'complete' },
+  summary: { status: ClassificationState; completionState?: 'idle' | 'running' | 'partial' | 'complete' },
 ) {
   const legacyComplete = summary.completionState === undefined && albums.every(album => Boolean(classifications[album.id]?.primaryGenre))
   const complete = summary.completionState === 'complete' || legacyComplete

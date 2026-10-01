@@ -2,7 +2,7 @@ import type { LibraryAlbum } from './library'
 import type { GenreId } from './genres'
 
 export type ClassificationSource = 'musicbrainz' | 'spotify-artist-genres' | 'apple-genre-tags' | 'unclassified'
-export type MetadataLookupStatus = 'not-needed' | 'success' | 'not-found' | 'failed'
+export type MetadataLookupStatus = 'not-needed' | 'success' | 'not-found' | 'failed' | 'retryable-failure'
 export type AlbumClassification = {
   albumId: string
   sourcePlatform: LibraryAlbum['source']
@@ -23,11 +23,36 @@ export type ClassificationSummary = {
   unclassified: number
   completed: number
   lastError: string | null
-  completionState?: 'not-started' | 'running' | 'partial' | 'complete'
+  processed: number
+  retryableFailures: number
+  permanentNoMatch: number
+  completionState: 'idle' | 'running' | 'partial' | 'complete'
 }
 export type ClassificationResult = { album: LibraryAlbum; classification: AlbumClassification }
+export type ClassificationQueueStats = {
+  total: number
+  remaining: number
+  classified: number
+  requestCount: number
+  cacheHits: number
+  retryableFailures: number
+  count429: number
+  count503: number
+  currentAlbum: string | null
+}
+export type ClassificationRunOptions = {
+  signal?: AbortSignal
+  isActive?: () => boolean
+  onResult?: (result: ClassificationResult, stats: ClassificationQueueStats) => void
+  retryDelayMs?: (retryIndex: number, retryAfterMs?: number) => number
+}
 type MbCacheEntry = { expiresAt: number; tags: string[]; confidence: number; status?: MetadataLookupStatus; reason?: string }
-export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v4'
+export const MUSICBRAINZ_CACHE_KEY = 'mva-musicbrainz-cache-v5'
+export const MUSICBRAINZ_REQUEST_SPACING_MS = 1200
+export const MUSICBRAINZ_RETRY_DELAYS_MS = [2000, 5000, 10000] as const
+export function getMusicBrainzRetryDelay(retryIndex: number, retryAfterMs = 0) {
+  return Math.max(MUSICBRAINZ_RETRY_DELAYS_MS[Math.min(retryIndex, MUSICBRAINZ_RETRY_DELAYS_MS.length - 1)] ?? MUSICBRAINZ_RETRY_DELAYS_MS.at(-1)!, retryAfterMs)
+}
 const CACHE_TTL = 1000 * 60 * 60 * 24 * 30
 const GENRE_IDS: GenreId[] = ['pop','electronic','soul','hip-hop','indie','rock','jazz','ambient','dance']
 const synonyms: Record<GenreId, string[]> = {
@@ -46,20 +71,46 @@ const normalize = (value: string) => value.toLowerCase().normalize('NFKD').repla
 const musicBrainzUrl = (path: string, params: Record<string, string>) => `/api/musicbrainz?${new URLSearchParams({ path, ...params }).toString()}`
 const readCache = (): Record<string, MbCacheEntry> => { try { return JSON.parse(localStorage.getItem(MUSICBRAINZ_CACHE_KEY) ?? '{}') as Record<string, MbCacheEntry> } catch { return {} } }
 const writeCache = (cache: Record<string, MbCacheEntry>) => { try { localStorage.setItem(MUSICBRAINZ_CACHE_KEY, JSON.stringify(cache)) } catch { /* private mode */ } }
-const sleep = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => {
+  if (signal?.aborted) { reject(new DOMException('Classification cancelled', 'AbortError')); return }
+  const timer = window.setTimeout(() => { signal?.removeEventListener('abort', cancel); resolve() }, ms)
+  const cancel = () => { window.clearTimeout(timer); reject(new DOMException('Classification cancelled', 'AbortError')) }
+  signal?.addEventListener('abort', cancel, { once: true })
+})
 let queueTail = Promise.resolve()
 let lastRequestAt = 0
-function throttled<T>(task: () => Promise<T>): Promise<T> {
-  const run = queueTail.then(async () => { const wait = Math.max(0, 1100 - (Date.now() - lastRequestAt)); if (wait) await sleep(wait); lastRequestAt = Date.now(); return task() })
+function throttled<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const run = queueTail.then(async () => { if (signal?.aborted) throw new DOMException('Classification cancelled', 'AbortError'); const wait = Math.max(0, MUSICBRAINZ_REQUEST_SPACING_MS - (Date.now() - lastRequestAt)); if (wait) await sleep(wait, signal); if (signal?.aborted) throw new DOMException('Classification cancelled', 'AbortError'); lastRequestAt = Date.now(); return task() })
   queueTail = run.then(() => undefined, () => undefined)
   return run
 }
-async function mbFetch<T>(url: string): Promise<T> {
-  const response = await throttled(() => fetch(url, { headers: { Accept: 'application/json' } }))
+class MusicBrainzRequestError extends Error {
+  readonly status: number | null
+  readonly retryable: boolean
+  readonly retryAfterMs: number
+  constructor(message: string, status: number | null, retryable: boolean, retryAfterMs = 0) { super(message); this.status = status; this.retryable = retryable; this.retryAfterMs = retryAfterMs }
+}
+const isAbortError = (error: unknown) => error instanceof DOMException && error.name === 'AbortError'
+function retryAfterMs(response: Response) {
+  const value = response.headers.get('retry-after')
+  if (!value) return 0
+  const seconds = Number(value)
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000)
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? Math.max(0, timestamp - Date.now()) : 0
+}
+async function mbFetch<T>(url: string, signal?: AbortSignal, stats?: ClassificationQueueStats): Promise<T> {
+  const response = await throttled(() => fetch(url, { headers: { Accept: 'application/json' }, signal }), signal)
+  if (stats) {
+    stats.requestCount += 1
+    if (response.status === 429) stats.count429 += 1
+    if (response.status === 503) stats.count503 += 1
+  }
   const contentType = response.headers.get('content-type') ?? ''
-  if (!isJsonContentType(contentType)) throw new Error(`MusicBrainz non-JSON response: HTTP ${response.status}; content-type=${contentType || 'missing'}; url=${url}`)
-  if (!response.ok) throw new Error(`MusicBrainz HTTP ${response.status}`)
-  return response.json() as Promise<T>
+  const retryable = response.status === 429 || response.status === 503 || response.status >= 500
+  if (!isJsonContentType(contentType)) throw new MusicBrainzRequestError(`MusicBrainz non-JSON response: HTTP ${response.status}; content-type=${contentType || 'missing'}; url=${url}`, response.status, retryable, retryAfterMs(response))
+  if (!response.ok) throw new MusicBrainzRequestError(`MusicBrainz HTTP ${response.status}`, response.status, retryable, retryAfterMs(response))
+  try { return await response.json() as T } catch { throw new MusicBrainzRequestError(`MusicBrainz returned invalid JSON: ${url}`, response.status, true, retryAfterMs(response)) }
 }
 
 export function isJsonContentType(contentType: string) {
@@ -78,25 +129,38 @@ function matchScore(album: LibraryAlbum, hit: NonNullable<MbSearch['release-grou
   const yearScore = year && album.year && year === album.year ? .1 : .0
   return .85 + yearScore
 }
-async function lookupMusicBrainz(album: LibraryAlbum): Promise<MbCacheEntry> {
+async function lookupMusicBrainz(album: LibraryAlbum, signal?: AbortSignal, stats?: ClassificationQueueStats, retryDelayMs = getMusicBrainzRetryDelay): Promise<MbCacheEntry> {
   const key = `${normalize(album.title)}|${normalize(album.artist)}|${album.year ?? ''}`
   const cache = readCache(), cached = cache[key]
-  if (cached && cached.expiresAt > Date.now()) return { ...cached, status: cached.status ?? (cached.tags.length ? 'success' : 'not-found') }
+  if (cached && cached.expiresAt > Date.now() && (cached.status === 'success' || cached.status === 'not-found' || !cached.status)) {
+    if (stats) stats.cacheHits += 1
+    return { ...cached, status: cached.status ?? (cached.tags.length ? 'success' : 'not-found') }
+  }
   const query = `releasegroup:"${album.title}" AND artist:"${album.artist.split(',')[0]}"`
-  try {
-    const search = await mbFetch<MbSearch>(musicBrainzUrl('/ws/2/release-group/', { query, fmt: 'json', limit: '5' }))
-    const hit = (search['release-groups'] ?? []).map(item => ({ item, score: matchScore(album, item) })).sort((a,b) => b.score - a.score)[0]
-    if (!hit || hit.score < .85 || !hit.item.id) {
-      const result = { expiresAt: Date.now() + CACHE_TTL, tags: [], confidence: 0, status: 'not-found' as const, reason: 'MusicBrainz 找不到足够可靠的专辑与艺人匹配。' }
+  for (let retry = 0; ; retry += 1) {
+    try {
+      const search = await mbFetch<MbSearch>(musicBrainzUrl('/ws/2/release-group/', { query, fmt: 'json', limit: '5' }), signal, stats)
+      const hit = (search['release-groups'] ?? []).map(item => ({ item, score: matchScore(album, item) })).sort((a,b) => b.score - a.score)[0]
+      if (!hit || hit.score < .85 || !hit.item.id) {
+        const result = { expiresAt: Date.now() + CACHE_TTL, tags: [], confidence: 0, status: 'not-found' as const, reason: 'MusicBrainz 找不到足够可靠的专辑与艺人匹配。' }
+        cache[key] = result; writeCache(cache); return result
+      }
+      const detail = await mbFetch<MbDetail>(musicBrainzUrl(`/ws/2/release-group/${encodeURIComponent(hit.item.id)}`, { inc: 'genres tags', fmt: 'json' }), signal, stats)
+      const tags = [...new Set([...(detail.genres ?? []), ...(detail.tags ?? [])].map(tag => tag.name?.trim().toLowerCase()).filter(Boolean) as string[])]
+      const result = { expiresAt: Date.now() + CACHE_TTL, tags, confidence: tags.length ? Math.min(.98, hit.score / 1.0) : .55, status: tags.length ? 'success' as const : 'not-found' as const, reason: tags.length ? undefined : 'MusicBrainz 匹配成功但没有可用风格标签。' }
       cache[key] = result; writeCache(cache); return result
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      const requestError = error instanceof MusicBrainzRequestError
+        ? error
+        : new MusicBrainzRequestError(error instanceof Error ? error.message : 'MusicBrainz 请求失败。', null, true)
+      if (!requestError.retryable || retry >= MUSICBRAINZ_RETRY_DELAYS_MS.length) {
+        return { expiresAt: 0, tags: [], confidence: 0, status: requestError.retryable ? 'retryable-failure' : 'failed', reason: requestError.message }
+      }
+      if (stats) stats.retryableFailures += 1
+      const delay = retryDelayMs(retry, requestError.retryAfterMs)
+      await sleep(delay, signal)
     }
-    const detail = await mbFetch<MbDetail>(musicBrainzUrl(`/ws/2/release-group/${encodeURIComponent(hit.item.id)}`, { inc: 'genres tags', fmt: 'json' }))
-    const tags = [...new Set([...(detail.genres ?? []), ...(detail.tags ?? [])].map(tag => tag.name?.trim().toLowerCase()).filter(Boolean) as string[])]
-    const result = { expiresAt: Date.now() + CACHE_TTL, tags, confidence: tags.length ? Math.min(.98, hit.score / 1.0) : .55, status: tags.length ? 'success' as const : 'not-found' as const, reason: tags.length ? undefined : 'MusicBrainz 匹配成功但没有可用风格标签。' }
-    cache[key] = result; writeCache(cache); return result
-  } catch (error) {
-    const result = { expiresAt: Date.now() + 1000 * 60 * 10, tags: [], confidence: 0, status: 'failed' as const, reason: error instanceof Error ? error.message : 'MusicBrainz 请求失败。' }
-    cache[key] = result; writeCache(cache); return result
   }
 }
 export function mapRawGenres(rawTags: string[]) {
@@ -167,28 +231,62 @@ function reportClassificationDiagnostic(diagnostic: ClassificationDiagnostic) {
   console.debug('[MVA classification]', diagnostic)
 }
 
-export async function classifyAlbum(album: LibraryAlbum, onProgress?: (message: string) => void): Promise<AlbumClassification> {
+export async function classifyAlbum(album: LibraryAlbum, onProgress?: (message: string) => void, signal?: AbortSignal, stats?: ClassificationQueueStats, retryDelayMs = getMusicBrainzRetryDelay): Promise<AlbumClassification> {
   const known = classifyAlbumFromKnownData(album)
   if (known.primaryGenre) {
     reportClassificationDiagnostic({ albumId: album.id, album: album.title, artist: album.artist, metadataSource: known.classificationSource, metadataTags: known.rawGenreTags, normalizedGenre: [known.primaryGenre, ...known.secondaryGenres].filter((genre): genre is GenreId => Boolean(genre)), finalMvaGenre: known.primaryGenre, failureReason: known.reason })
     return known
   }
   onProgress?.(`正在查询 MusicBrainz：${album.title}`)
-  const mb = await lookupMusicBrainz(album)
+  const mb = await lookupMusicBrainz(album, signal, stats, retryDelayMs)
   const result = classifyFromTags(album, mb.tags, 'musicbrainz', mb.confidence, mb.reason, mb.status ?? 'not-found')
   reportClassificationDiagnostic({ albumId: album.id, album: album.title, artist: album.artist, metadataSource: 'musicbrainz', metadataTags: mb.tags, normalizedGenre: mapRawGenres(mb.tags), finalMvaGenre: result.primaryGenre, failureReason: result.reason })
   return result
 }
-export async function classifyAlbums(albums: LibraryAlbum[], onProgress?: (message: string) => void): Promise<ClassificationResult[]> {
+const artistKey = (album: LibraryAlbum) => normalize(album.artist.split(',')[0])
+const reusedClassification = (album: LibraryAlbum, classification: AlbumClassification): AlbumClassification => ({
+  ...classification,
+  albumId: album.id,
+  sourcePlatform: album.source,
+  lastClassifiedAt: new Date().toISOString(),
+  reason: 'Reused a resolved classification for the same artist.',
+})
+export async function classifyAlbums(albums: LibraryAlbum[], onProgress?: (message: string) => void, options: ClassificationRunOptions = {}): Promise<ClassificationResult[]> {
   const results: ClassificationResult[] = []
-  for (const album of albums) results.push({ album, classification: await classifyAlbum(album, onProgress) })
+  const artistClassifications = new Map<string, AlbumClassification>()
+  const stats: ClassificationQueueStats = { total: albums.length, remaining: albums.length, classified: 0, requestCount: 0, cacheHits: 0, retryableFailures: 0, count429: 0, count503: 0, currentAlbum: null }
+  for (const album of albums) {
+    if (options.signal?.aborted || options.isActive && !options.isActive()) throw new DOMException('Classification cancelled', 'AbortError')
+    stats.currentAlbum = album.title
+    const known = classifyAlbumFromKnownData(album)
+    const artist = artistKey(album)
+    const cachedArtistClassification = artist ? artistClassifications.get(artist) : undefined
+    const classification = known.primaryGenre
+      ? known
+      : cachedArtistClassification?.primaryGenre
+        ? reusedClassification(album, cachedArtistClassification)
+        : await classifyAlbum(album, onProgress, options.signal, stats, options.retryDelayMs)
+    if (classification.primaryGenre && artist && !artistClassifications.has(artist)) artistClassifications.set(artist, classification)
+    const result = { album, classification: normalizeClassification(classification) }
+    results.push(result)
+    stats.remaining = albums.length - results.length
+    stats.classified = results.filter(item => Boolean(item.classification.primaryGenre)).length
+    stats.retryableFailures = results.filter(item => item.classification.metadataLookup === 'retryable-failure').length
+    options.onResult?.(result, { ...stats })
+    if (stats.remaining % 10 === 0 || stats.remaining === 0) {
+      const dev = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV)
+      if (dev) console.debug('[CLASSIFIER]', { ...stats })
+    }
+  }
   return results
 }
-export function summaryForClassifications(albums: LibraryAlbum[], classifications: Record<string, AlbumClassification>, status: ClassificationSummary['status'] = 'ready', lastError: string | null = null): ClassificationSummary {
-  const total = albums.length, classified = albums.filter(album => Boolean(classifications[album.id]?.primaryGenre)).length
+export function summaryForClassifications(albums: LibraryAlbum[], classifications: Record<string, AlbumClassification>, status: ClassificationSummary['status'] = 'ready', lastError: string | null = null, options: { manualAssignmentIds?: Iterable<string>; retryableFailures?: number; permanentNoMatch?: number } = {}): ClassificationSummary {
+  const manualIds = new Set(options.manualAssignmentIds ?? [])
+  const total = albums.length, classified = albums.filter(album => Boolean(classifications[album.id]?.primaryGenre) || manualIds.has(album.id)).length
   const unclassified = total - classified
-  const failedLookups = albums.some(album => classifications[album.id]?.metadataLookup === 'failed')
-  const allProcessed = albums.every(album => Boolean(classifications[album.id]))
-  const completionState = status === 'idle' ? 'not-started' : status === 'running' ? 'running' : status === 'error' || failedLookups || !allProcessed || unclassified > 0 ? 'partial' : 'complete'
-  return { status, total, classified, unclassified, completed: albums.filter(album => Boolean(classifications[album.id])).length, lastError, completionState }
+  const processed = albums.filter(album => Boolean(classifications[album.id]) || manualIds.has(album.id)).length
+  const retryableFailures = options.retryableFailures ?? albums.filter(album => classifications[album.id]?.metadataLookup === 'retryable-failure').length
+  const permanentNoMatch = options.permanentNoMatch ?? albums.filter(album => classifications[album.id]?.metadataLookup === 'not-found').length
+  const completionState = status === 'idle' ? 'idle' : status === 'running' ? 'running' : status === 'error' || processed < total || unclassified > 0 || retryableFailures > 0 ? 'partial' : 'complete'
+  return { status, total, classified, unclassified, completed: processed, processed, retryableFailures, permanentNoMatch, lastError, completionState }
 }

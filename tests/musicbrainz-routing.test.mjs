@@ -101,10 +101,7 @@ test('a non-JSON response is not stored as a usable metadata result', async () =
   assert.equal(result.primaryGenre, null)
   assert.equal(result.metadataLookup, 'failed')
   assert.match(result.reason, /non-JSON response/)
-  const cached = JSON.parse(values.get(MUSICBRAINZ_CACHE_KEY))
-  const entry = Object.values(cached)[0]
-  assert.equal(entry.status, 'failed')
-  assert.doesNotMatch(JSON.stringify(entry), /<html>/i)
+  assert.equal(values.has(MUSICBRAINZ_CACHE_KEY), false)
 })
 
 test('manual genre choices remain authoritative across metadata cache migration', () => {
@@ -112,5 +109,5 @@ test('manual genre choices remain authoritative across metadata cache migration'
     [album.id]: { genres: ['pop'], primary: 'pop' },
   })
   assert.deepEqual(records, ['pop'])
-  assert.equal(MUSICBRAINZ_CACHE_KEY, 'mva-musicbrainz-cache-v4')
+  assert.equal(MUSICBRAINZ_CACHE_KEY, 'mva-musicbrainz-cache-v5')
 })
